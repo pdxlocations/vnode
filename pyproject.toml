@@ -1,0 +1,27 @@
+[project]
+name = "vnode"
+version = "0.1.0"
+description = "Virtual Meshtastic node using mudp transport and meshdb storage."
+authors = [
+    {name = "Ben Lipsey",email = "ben@pdxlocations.com"}
+]
+license = "GPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=43,<45",
+  "meshdb>=0.1.9",
+  "meshtastic>=2.7,<3.0",
+  "mudp>=1.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/pdxlocations/vnode"
+Issues = "https://github.com/pdxlocations/vnode/issues"
+
+[project.scripts]
+vnode = "vnode.cli:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"

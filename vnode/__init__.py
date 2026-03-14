@@ -1,0 +1,1 @@
+"""Virtual Meshtastic node package."""

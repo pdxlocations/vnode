@@ -1,0 +1,27 @@
+{
+  "node_id": "!89abcdef",
+  "long_name": "Virtual Meshtastic Node",
+  "short_name": "VND",
+  "hw_model": "ANDROID_SIM",
+  "role": "CLIENT",
+  "is_licensed": false,
+  "hop_limit": 3,
+  "broadcasts": {
+    "send_startup_nodeinfo": true,
+    "nodeinfo_interval_seconds": 900
+  },
+  "channel": {
+    "name": "LongFast",
+    "psk": "AQ=="
+  },
+  "udp": {
+    "mcast_group": "224.0.0.69",
+    "mcast_port": 4403
+  },
+  "meshdb": {
+    "path": "./data"
+  },
+  "security": {
+    "private_key": ""
+  }
+}

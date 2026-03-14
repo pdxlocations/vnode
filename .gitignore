@@ -1,0 +1,8 @@
+/.venv
+/data
+/__pycache__
+/examples/__pycache__
+/vnode/__pycache__
+/tests/__pycache__
+node.public.key
+node.json

@@ -4,7 +4,7 @@ import json
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass
@@ -16,9 +16,9 @@ class BroadcastConfig:
 @dataclass
 class PositionConfig:
     enabled: bool = False
-    latitude: float | None = None
-    longitude: float | None = None
-    altitude: int | None = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    altitude: Optional[int] = None
     position_interval_seconds: int = 900
 
 
@@ -50,8 +50,8 @@ class NodeConfig:
     node_id: str = ""
     long_name: str = "Virtual Meshtastic Node"
     short_name: str = "VND"
-    hw_model: str | int = "ANDROID_SIM"
-    role: str | int = "CLIENT"
+    hw_model: Union[str, int] = "ANDROID_SIM"
+    role: Union[str, int] = "CLIENT"
     is_licensed: bool = False
     hop_limit: int = 3
     broadcasts: BroadcastConfig = field(default_factory=BroadcastConfig)
@@ -62,7 +62,7 @@ class NodeConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
 
     @classmethod
-    def load(cls, path: str | Path) -> "NodeConfig":
+    def load(cls, path: Union[str, Path]) -> "NodeConfig":
         config_path = Path(path)
         cls.ensure_exists(config_path)
         payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -91,7 +91,7 @@ class NodeConfig:
         )
 
     @staticmethod
-    def _example_config_candidates(config_path: Path) -> list[Path]:
+    def _example_config_candidates(config_path: Path) -> List[Path]:
         package_root = Path(__file__).resolve().parent
         repo_root = Path(__file__).resolve().parents[2]
         return [
@@ -101,7 +101,7 @@ class NodeConfig:
         ]
 
     @classmethod
-    def ensure_exists(cls, path: str | Path) -> None:
+    def ensure_exists(cls, path: Union[str, Path]) -> None:
         config_path = Path(path)
         if config_path.exists():
             return
@@ -139,21 +139,21 @@ class NodeConfig:
                 return f"!{value:08x}"
 
     @classmethod
-    def _populate_generated_defaults(cls, payload: dict[str, Any]) -> bool:
+    def _populate_generated_defaults(cls, payload: Dict[str, Any]) -> bool:
         changed = False
         if not str(payload.get("node_id", "")).strip():
             payload["node_id"] = cls._generate_node_id()
             changed = True
         return changed
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: Union[str, Path]) -> None:
         config_path = Path(path)
         config_path.write_text(
             json.dumps(self.to_dict(), indent=2, sort_keys=False) + "\n",
             encoding="utf-8",
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         security = data.get("security")
         if isinstance(security, dict):

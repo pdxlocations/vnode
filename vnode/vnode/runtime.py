@@ -4,7 +4,7 @@ import random
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
 import meshdb
 from google.protobuf.message import DecodeError
@@ -30,7 +30,7 @@ TEXT_PORTNUMS = {
 }
 
 
-def parse_node_id(node_id: str | int) -> int:
+def parse_node_id(node_id: Union[str, int]) -> int:
     if isinstance(node_id, int):
         return node_id
     text = str(node_id).strip()
@@ -39,13 +39,13 @@ def parse_node_id(node_id: str | int) -> int:
     return int(text, 16)
 
 
-def resolve_hw_model(value: str | int) -> int:
+def resolve_hw_model(value: Union[str, int]) -> int:
     if isinstance(value, int):
         return value
     return mesh_pb2.HardwareModel.Value(str(value))
 
 
-def resolve_role(value: str | int) -> int:
+def resolve_role(value: Union[str, int]) -> int:
     if isinstance(value, int):
         return value
     return config_pb2.Config.DeviceConfig.Role.Value(str(value))
@@ -55,16 +55,16 @@ class VirtualNode:
     PACKET_TOPIC = "mesh.rx.unique_packet"
     DUPLICATE_TOPIC = "mesh.rx.duplicate"
 
-    def __init__(self, config_path: str | Path = "node.json") -> None:
+    def __init__(self, config_path: Union[str, Path] = "node.json") -> None:
         self.config_path = Path(config_path).resolve()
         self.base_dir = self.config_path.parent
         self.public_key_path = self.config_path.with_suffix(".public.key")
         self.config = NodeConfig.load(self.config_path)
         self.node_num = parse_node_id(self.config.node_id)
         self.meshdb_path = str((self.base_dir / self.config.meshdb.path).resolve())
-        self.stream: UDPPacketStream | None = None
+        self.stream: Optional[UDPPacketStream] = None
         self._stop = threading.Event()
-        self._broadcast_thread: threading.Thread | None = None
+        self._broadcast_thread: Optional[threading.Thread] = None
         self._message_id = random.getrandbits(32)
         self._public_key_b64 = ""
 
@@ -193,9 +193,9 @@ class VirtualNode:
         self,
         destination: int = BROADCAST_NUM,
         *,
-        latitude: float | None = None,
-        longitude: float | None = None,
-        altitude: int | None = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        altitude: Optional[int] = None,
     ) -> int:
         if not self.config.position.enabled:
             raise ValueError("Position sending is disabled in node.json")
@@ -221,15 +221,15 @@ class VirtualNode:
 
     def send_text(
         self,
-        destination: str | int,
+        destination: Union[str, int],
         message: str,
         pki_mode: str = "auto",
         *,
-        reply_id: int | None = None,
+        reply_id: Optional[int] = None,
         emoji: bool = False,
-        hop_limit: int | None = None,
-        hop_start: int | None = None,
-        want_ack: bool | None = None,
+        hop_limit: Optional[int] = None,
+        hop_start: Optional[int] = None,
+        want_ack: Optional[bool] = None,
     ) -> int:
         destination_num = self._resolve_destination(destination)
         data = mesh_pb2.Data()
@@ -254,15 +254,15 @@ class VirtualNode:
 
     def send_reply(
         self,
-        destination: str | int,
+        destination: Union[str, int],
         message: str,
         *,
         reply_id: int,
         emoji: bool = False,
         pki_mode: str = "auto",
-        hop_limit: int | None = None,
-        hop_start: int | None = None,
-        want_ack: bool | None = None,
+        hop_limit: Optional[int] = None,
+        hop_start: Optional[int] = None,
+        want_ack: Optional[bool] = None,
     ) -> int:
         return self.send_text(
             destination,
@@ -284,7 +284,7 @@ class VirtualNode:
     def is_text_message(self, packet: mesh_pb2.MeshPacket) -> bool:
         return bool(packet.HasField("decoded") and packet.decoded.portnum in TEXT_PORTNUMS)
 
-    def get_text_message(self, packet: mesh_pb2.MeshPacket) -> str | None:
+    def get_text_message(self, packet: mesh_pb2.MeshPacket) -> Optional[str]:
         if not self.is_text_message(packet):
             return None
         return packet.decoded.payload.decode("utf-8", "ignore")
@@ -296,7 +296,7 @@ class VirtualNode:
         *,
         emoji: bool = False,
         pki_mode: str = "auto",
-        want_ack: bool | None = None,
+        want_ack: Optional[bool] = None,
     ) -> int:
         sender_id = getattr(packet, "from", None)
         if sender_id is None:
@@ -321,8 +321,8 @@ class VirtualNode:
         *,
         destination: int,
         force_pki: bool,
-        hop_limit: int | None = None,
-        hop_start: int | None = None,
+        hop_limit: Optional[int] = None,
+        hop_start: Optional[int] = None,
         want_ack: bool = False,
     ) -> int:
         self.connect_send_socket()
@@ -466,7 +466,7 @@ class VirtualNode:
                 self.send_position()
                 next_position = now + position_interval
 
-    def _resolve_destination(self, destination: str | int) -> int:
+    def _resolve_destination(self, destination: Union[str, int]) -> int:
         if isinstance(destination, int):
             return destination
         text = str(destination).strip()
@@ -479,7 +479,7 @@ class VirtualNode:
             raise ValueError(f"Unknown destination '{destination}'")
         return int(resolved)
 
-    def _lookup_public_key(self, node_num: int) -> bytes | None:
+    def _lookup_public_key(self, node_num: int) -> Optional[bytes]:
         if int(node_num) == self.node_num:
             key = self._public_key_b64
             return b64_decode(key) if key else None

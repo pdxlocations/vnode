@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from pubsub import pub
 
@@ -63,7 +64,7 @@ def show_public_api_examples(node: VirtualNode) -> None:
     print("      node.reply_to_packet(packet, 'message received')")
 
 
-EMBEDDED_NODE: VirtualNode | None = None
+EMBEDDED_NODE: Optional[VirtualNode] = None
 
 
 def main() -> int:

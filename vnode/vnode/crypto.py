@@ -4,6 +4,7 @@ import base64
 import secrets
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import Optional, Tuple
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
@@ -21,7 +22,7 @@ def b64_decode(text: str) -> bytes:
     return base64.b64decode(text.encode("ascii"))
 
 
-def generate_keypair() -> tuple[bytes, bytes]:
+def generate_keypair() -> Tuple[bytes, bytes]:
     private_key = X25519PrivateKey.generate()
     public_key = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
@@ -75,7 +76,7 @@ def encrypt_dm(
     packet_id: int,
     from_node: int,
     plaintext: bytes,
-    extra_nonce: int | None = None,
+    extra_nonce: Optional[int] = None,
 ) -> bytes:
     nonce_value = secrets.randbits(32) if extra_nonce is None else int(extra_nonce) & 0xFFFFFFFF
     key = build_shared_key(sender_private_key, receiver_public_key)

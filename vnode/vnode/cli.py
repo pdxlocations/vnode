@@ -7,7 +7,13 @@ from .runtime import VirtualNode
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Virtual Meshtastic node")
-    parser.add_argument("--config", default="node.json", help="Path to node.json")
+    parser.add_argument(
+        "--vnode-file",
+        "--config",
+        dest="vnode_file",
+        default="node.json",
+        help="Path to node.json",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("run", help="Run the virtual node listener and nodeinfo broadcaster")
@@ -37,18 +43,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        node = VirtualNode(args.config)
+        node = VirtualNode(args.vnode_file)
         node.run_forever()
         return 0
 
     if args.command == "send-text":
-        node = VirtualNode(args.config)
+        node = VirtualNode(args.vnode_file)
         packet_id = node.send_text(args.to, args.message, pki_mode=args.pki)
         print(packet_id)
         return 0
 
     if args.command == "send-nodeinfo":
-        node = VirtualNode(args.config)
+        node = VirtualNode(args.vnode_file)
         packet_id = node.send_nodeinfo(destination=node._resolve_destination(args.to))
         print(packet_id)
         return 0

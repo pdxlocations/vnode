@@ -13,6 +13,9 @@ Edit [node.json](node.json).
 If `node.json` does not exist yet, the runtime will create it automatically from
 [example-node.json](example-node.json).
 
+If the template leaves `node_id` blank, the runtime will generate and persist a random
+Meshtastic-style node ID when it creates or first loads `node.json`.
+
 The runtime will generate and persist a PKI private key into `node.json` on first run if
 the private key is blank.
 
@@ -29,17 +32,31 @@ broadcasts.
 ## Run
 
 ```bash
-.venv/bin/python -m vnode run
+.venv/bin/pip install -e .
+.venv/bin/python -m vnode --vnode-file node.json run
 ```
 
 ## Send a DM
 
 ```bash
-.venv/bin/python -m vnode send-text --to '!1234abcd' --message 'hello'
+.venv/bin/python -m vnode --vnode-file node.json send-text --to '!1234abcd' --message 'hello'
 ```
 
 `send-text` uses PKI automatically for direct messages when the destination node has a
 stored public key in `meshdb`. Otherwise it falls back to channel encryption.
+`--config` is still accepted as a compatibility alias for `--vnode-file`.
+
+## Library
+
+The installable package lives under `vnode/vnode`, and the public library surface is
+exported from `vnode` directly:
+
+```python
+from vnode import NodeConfig, VirtualNode, generate_keypair
+
+node = VirtualNode("node.json")
+packet_id = node.send_text("!1234abcd", "hello")
+```
 
 ## Examples
 
@@ -48,12 +65,14 @@ Use these as small runnable references for common tasks:
 - `examples/autoresponder.py`: DM-only reply bot for inbound direct text messages
 - `examples/listen_packets.py`: packet logger for multicast traffic and decoded text
 - `examples/send_dm.py`: minimal one-shot direct-message sender
+- `examples/library_embed.py`: minimal application-style embedding example using `VirtualNode` directly
 - `examples/watch_reliability.py`: watcher for ACK, NAK, retry, and retransmit-failure events
 
 ```bash
 .venv/bin/python examples/autoresponder.py
 .venv/bin/python examples/listen_packets.py
 .venv/bin/python examples/send_dm.py --to '!1234abcd' --message 'hello'
+.venv/bin/python examples/library_embed.py
 .venv/bin/python examples/watch_reliability.py --to '!1234abcd' --message 'hello'
 ```
 

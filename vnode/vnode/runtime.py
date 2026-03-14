@@ -127,7 +127,6 @@ class VirtualNode:
             return
         pub.subscribe(self._handle_raw_packet, "mesh.rx.packet")
         pub.subscribe(self._handle_unique_packet, self.PACKET_TOPIC)
-        pub.subscribe(self._handle_listener_error, "mesh.rx.listener_error")
         self.stream = UDPPacketStream(
             self.config.udp.mcast_group,
             int(self.config.udp.mcast_port),
@@ -155,10 +154,6 @@ class VirtualNode:
             pass
         try:
             pub.unsubscribe(self._handle_unique_packet, self.PACKET_TOPIC)
-        except KeyError:
-            pass
-        try:
-            pub.unsubscribe(self._handle_listener_error, "mesh.rx.listener_error")
         except KeyError:
             pass
         if self._broadcast_thread and self._broadcast_thread.is_alive():
@@ -370,7 +365,8 @@ class VirtualNode:
         self._persist_outbound_packet(packet, data)
         return packet.id
 
-    def _handle_raw_packet(self, packet: mesh_pb2.MeshPacket, addr: Any) -> None:
+    def _handle_raw_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
+        del addr
         if not getattr(packet, "rx_time", 0):
             packet.rx_time = int(time.time())
 
@@ -378,7 +374,7 @@ class VirtualNode:
             self._try_decode_pki(packet)
         self._maybe_send_ack(packet)
 
-    def _handle_unique_packet(self, packet: mesh_pb2.MeshPacket, addr: Any) -> None:
+    def _handle_unique_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
         del addr
         if not getattr(packet, "rx_time", 0):
             packet.rx_time = int(time.time())
@@ -388,9 +384,6 @@ class VirtualNode:
             return
 
         self._persist_packet(packet)
-
-    def _handle_listener_error(self, error: Exception) -> None:
-        raise RuntimeError("UDP listener failed") from error
 
     def _try_decode_pki(self, packet: mesh_pb2.MeshPacket) -> bool:
         if packet.channel != 0 or packet.to != self.node_num or not packet.encrypted:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,7 @@ class SecurityConfig:
 
 @dataclass
 class NodeConfig:
-    node_id: str = "!89abcdef"
+    node_id: str = ""
     long_name: str = "Virtual Meshtastic Node"
     short_name: str = "VND"
     hw_model: str | int = "ANDROID_SIM"
@@ -65,6 +66,12 @@ class NodeConfig:
         config_path = Path(path)
         cls.ensure_exists(config_path)
         payload = json.loads(config_path.read_text(encoding="utf-8"))
+        changed = cls._populate_generated_defaults(payload)
+        if changed:
+            config_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=False) + "\n",
+                encoding="utf-8",
+            )
         security_payload = dict(payload.get("security", {}))
         security_payload.pop("enabled", None)
         return cls(
@@ -85,9 +92,11 @@ class NodeConfig:
 
     @staticmethod
     def _example_config_candidates(config_path: Path) -> list[Path]:
-        repo_root = Path(__file__).resolve().parents[1]
+        package_root = Path(__file__).resolve().parent
+        repo_root = Path(__file__).resolve().parents[2]
         return [
             config_path.with_name("example-node.json"),
+            package_root / "example-node.json",
             repo_root / "example-node.json",
         ]
 
@@ -108,6 +117,7 @@ class NodeConfig:
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.loads(template_path.read_text(encoding="utf-8"))
+        cls._populate_generated_defaults(payload)
         security = payload.setdefault("security", {})
         security.pop("public_key", None)
         if not str(security.get("private_key", "")).strip():
@@ -120,6 +130,21 @@ class NodeConfig:
             json.dumps(payload, indent=2, sort_keys=False) + "\n",
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _generate_node_id() -> str:
+        while True:
+            value = secrets.randbits(32)
+            if value not in (0, 0xFFFFFFFF):
+                return f"!{value:08x}"
+
+    @classmethod
+    def _populate_generated_defaults(cls, payload: dict[str, Any]) -> bool:
+        changed = False
+        if not str(payload.get("node_id", "")).strip():
+            payload["node_id"] = cls._generate_node_id()
+            changed = True
+        return changed
 
     def save(self, path: str | Path) -> None:
         config_path = Path(path)

@@ -1,9 +1,15 @@
 import unittest
 import json
 import sqlite3
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = REPO_ROOT / "vnode"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from meshtastic import BROADCAST_NUM
 from examples.autoresponder import DirectMessageAutoResponder
@@ -155,7 +161,7 @@ class PkiCryptoTest(unittest.TestCase):
             example_path.write_text(
                 json.dumps(
                     {
-                        "node_id": "!11223344",
+                        "node_id": "",
                         "long_name": "Template Node",
                         "short_name": "TPL",
                         "hw_model": "ANDROID_SIM",
@@ -196,7 +202,7 @@ class PkiCryptoTest(unittest.TestCase):
             written = json.loads(config_path.read_text(encoding="utf-8"))
 
             self.assertTrue(config_path.exists())
-            self.assertEqual(node.config.node_id, "!11223344")
+            self.assertRegex(node.config.node_id, r"^![0-9a-f]{8}$")
             self.assertEqual(node.config.long_name, "Template Node")
             self.assertEqual(node.config.channel.name, "TemplateChannel")
             self.assertEqual(node.config.hop_limit, 5)
@@ -204,6 +210,7 @@ class PkiCryptoTest(unittest.TestCase):
             self.assertEqual(node.config.position.latitude, 45.523064)
             self.assertEqual(node.config.position.longitude, -122.676483)
             self.assertEqual(node.config.position.altitude, 27)
+            self.assertEqual(written["node_id"], node.config.node_id)
             self.assertTrue(written["security"]["private_key"])
 
     def test_send_position_uses_configured_lat_lon(self) -> None:

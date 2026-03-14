@@ -2,7 +2,7 @@
   "node_id": "",
   "long_name": "Virtual Meshtastic Node",
   "short_name": "VND",
-  "hw_model": "HELTEC_V3",
+  "hw_model": "ANDROID_SIM",
   "role": "CLIENT",
   "is_licensed": false,
   "hop_limit": 3,

@@ -7,15 +7,19 @@ from pathlib import Path
 
 from pubsub import pub
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    # Allow running this script directly from the repository root.
-    sys.path.insert(0, str(REPO_ROOT))
-
-from vnode.runtime import VirtualNode
+try:
+    from vnode import VirtualNode
+except ImportError:
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    SOURCE_ROOT = REPO_ROOT / "vnode"
+    if str(SOURCE_ROOT) not in sys.path:
+        # Allow running this script directly from the repository root.
+        sys.path.insert(0, str(SOURCE_ROOT))
+    from vnode import VirtualNode
 
 
 def on_ack(packet, routing, addr, pending) -> None:
+    # ACK/NAK packets use ROUTING_APP and point back to the original request_id.
     del routing
     request_id = packet.decoded.request_id if packet.HasField("decoded") else 0
     print(
@@ -52,15 +56,23 @@ def on_max_retransmit(pending, error_reason) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Watch ACK/NAK/retry events")
-    parser.add_argument("--config", default="node.json", help="Path to node.json")
+    parser.add_argument(
+        "--vnode-file",
+        "--config",
+        dest="vnode_file",
+        default="node.json",
+        help="Path to node.json",
+    )
     parser.add_argument("--to", help="Optional destination node id to send to on startup")
     parser.add_argument("--message", help="Optional message to send on startup")
     args = parser.parse_args()
 
-    node = VirtualNode(args.config)
+    # Start a normal vnode, then watch the mudp reliability topics it emits.
+    node = VirtualNode(args.vnode_file)
     node.start()
 
-    # These pubsub topics mirror the reliability events emitted by mudp.
+    # These pubsub topics come from mudp, not the example itself.
+    # They let app code observe ACK resolution and retry behavior without reimplementing transport logic.
     pub.subscribe(on_ack, "mesh.rx.ack")
     pub.subscribe(on_nak, "mesh.rx.nak")
     pub.subscribe(on_retry, "mesh.tx.retry")
@@ -80,6 +92,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        # Unsubscribe explicitly so repeated runs in the same interpreter do not accumulate listeners.
         for topic, listener in (
             ("mesh.rx.ack", on_ack),
             ("mesh.rx.nak", on_nak),
@@ -91,6 +104,7 @@ def main() -> int:
                 pub.unsubscribe(listener, topic)
             except KeyError:
                 pass
+        # Stop the node after removing listeners so no more events arrive during shutdown.
         node.stop()
 
 

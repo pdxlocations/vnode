@@ -8,12 +8,15 @@ from pathlib import Path
 from meshtastic.protobuf import mesh_pb2, portnums_pb2
 from pubsub import pub
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    # Allow running this script directly from the repository root.
-    sys.path.insert(0, str(REPO_ROOT))
-
-from vnode.runtime import VirtualNode
+try:
+    from vnode import VirtualNode
+except ImportError:
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    SOURCE_ROOT = REPO_ROOT / "vnode"
+    if str(SOURCE_ROOT) not in sys.path:
+        # Allow running this script directly from the repository root.
+        sys.path.insert(0, str(SOURCE_ROOT))
+    from vnode import VirtualNode
 
 
 class PacketPrinter:
@@ -21,7 +24,8 @@ class PacketPrinter:
         self.node = node
 
     def on_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
-        # Try PKI decode before printing so direct messages show readable payloads.
+        # Packets on the app-facing topic are already deduplicated, but PKI DMs may still need
+        # local decryption before their decoded payload is visible.
         if not packet.HasField("decoded"):
             self.node._try_decode_pki(packet)
 
@@ -39,6 +43,7 @@ class PacketPrinter:
             summary += " portnum=<encrypted>"
         print(summary)
 
+        # Show text payloads separately so it is easy to scan the log output.
         if packet.HasField("decoded") and packet.decoded.portnum == portnums_pb2.PortNum.TEXT_MESSAGE_APP:
             message = packet.decoded.payload.decode("utf-8", "ignore")
             print(f"         text={message}")
@@ -46,14 +51,21 @@ class PacketPrinter:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Print incoming packets")
-    parser.add_argument("--config", default="node.json", help="Path to node.json")
+    parser.add_argument(
+        "--vnode-file",
+        "--config",
+        dest="vnode_file",
+        default="node.json",
+        help="Path to node.json",
+    )
     args = parser.parse_args()
 
-    node = VirtualNode(args.config)
+    # This is the minimal "listener" shape for an app using vnode as a library.
+    node = VirtualNode(args.vnode_file)
     printer = PacketPrinter(node)
 
     node.start()
-    # Listen to the vnode runtime's deduplicated packet topic.
+    # Subscribe to the runtime's deduplicated topic so repeated multicast copies do not spam logs.
     pub.subscribe(printer.on_packet, VirtualNode.PACKET_TOPIC)
     print("Listening for packets.")
 
@@ -67,6 +79,7 @@ def main() -> int:
             pub.unsubscribe(printer.on_packet, VirtualNode.PACKET_TOPIC)
         except KeyError:
             pass
+        # Stop the node to close sockets and stop the broadcast thread.
         node.stop()
 
 

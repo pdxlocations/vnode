@@ -1,13 +1,13 @@
 [project]
 name = "vnode"
-version = "0.1.1"
+version = "0.1.2"
 description = "Virtual Meshtastic node using mudp transport and meshdb storage."
 authors = [
     {name = "Ben Lipsey",email = "ben@pdxlocations.com"}
 ]
 license = "GPL-3.0-only"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.15"
 dependencies = [
   "cryptography>=43,<45",
   "meshdb>=0.1.9",

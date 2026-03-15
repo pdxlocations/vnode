@@ -58,14 +58,23 @@ node = VirtualNode("node.json")
 packet_id = node.send_text("!1234abcd", "hello")
 ```
 
+The runtime also mirrors the common Meshtastic Python pubsub and method surface:
+
+- topics: `meshtastic.connection.established`, `meshtastic.connection.lost`, `meshtastic.receive`, `meshtastic.receive.text`, `meshtastic.receive.position`, `meshtastic.receive.user`, `meshtastic.receive.data.<PORTNUM>`, `meshtastic.node.updated`, `meshtastic.log.line`
+- methods: `receive()`, `unreceive()`, `close()`, `sendText()`, `sendData()`, `sendPosition()`, `getMyNodeInfo()`, `getMyUser()`, `getLongName()`
+
+That means code shaped like the Meshtastic Python library can often run on `VirtualNode` with minimal changes.
+
 ## Examples
 
 Use these as small runnable references for common tasks:
 
 - `examples/autoresponder.py`: DM-only reply bot for inbound direct text messages
-- `examples/listen_packets.py`: packet logger for multicast traffic and decoded text
+- `examples/listen_packets.py`: packet logger using the mirrored `meshtastic.receive` callback shape
 - `examples/send_dm.py`: minimal one-shot direct-message sender
-- `examples/library_embed.py`: minimal application-style embedding example using `VirtualNode` directly
+- `examples/library_embed.py`: minimal application-style embedding example using both vnode and Meshtastic-style APIs
+- `examples/meshtastic_compat.py`: minimal Meshtastic-style example using `meshtastic.*` topics and `sendText()`
+- `examples/serial_or_vnode.py`: try a real serial node first, then fall back to `vnode` when no device is attached
 - `examples/watch_reliability.py`: watcher for ACK, NAK, retry, and retransmit-failure events
 
 ```bash
@@ -73,6 +82,8 @@ Use these as small runnable references for common tasks:
 .venv/bin/python examples/listen_packets.py
 .venv/bin/python examples/send_dm.py --to '!1234abcd' --message 'hello'
 .venv/bin/python examples/library_embed.py
+.venv/bin/python examples/meshtastic_compat.py
+.venv/bin/python examples/serial_or_vnode.py
 .venv/bin/python examples/watch_reliability.py --to '!1234abcd' --message 'hello'
 ```
 

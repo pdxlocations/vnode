@@ -3,9 +3,6 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
-from pubsub import pub
 
 try:
     from vnode import VirtualNode
@@ -24,27 +21,15 @@ STARTUP_DESTINATION = None
 STARTUP_MESSAGE = "hello from an embedded vnode"
 
 
-def on_packet(packet, addr=None) -> None:
-    del addr
-    # In an embedded app, this callback is where you would dispatch packets into your own logic.
-    source = getattr(packet, "from", 0)
-    destination = getattr(packet, "to", 0)
-    print(f"[RX] id={packet.id} from=!{int(source):08x} to=!{int(destination):08x}")
-
-    # Public helper: only treat direct messages addressed to this node as "incoming chats".
-    if EMBEDDED_NODE is not None and EMBEDDED_NODE.is_direct_message_for_me(packet):
-        print("     packet is a direct message for this node")
-
-    # Public helper: extract human-readable text when the packet is a text message.
-    if EMBEDDED_NODE is not None:
-        text = EMBEDDED_NODE.get_text_message(packet)
-        if text is not None:
-            print(f"     text={text}")
-
-    # Public helper: reply_to_packet() sends a threaded reply that preserves reply_id and hop settings.
-    # Example:
-    # if EMBEDDED_NODE is not None and EMBEDDED_NODE.is_direct_message_for_me(packet):
-    #     EMBEDDED_NODE.reply_to_packet(packet, "message received")
+def on_receive(packet, interface) -> None:
+    del interface
+    # This is the Meshtastic-compatible receive shape: packet dict + interface.
+    source = int(packet.get("from", 0) or 0)
+    destination = int(packet.get("to", 0) or 0)
+    print(f"[RX] id={packet.get('id')} from=!{source:08x} to=!{destination:08x}")
+    decoded = packet.get("decoded", {})
+    if isinstance(decoded, dict) and decoded.get("text"):
+        print(f"     text={decoded.get('text')}")
 
 
 def show_public_api_examples(node: VirtualNode) -> None:
@@ -54,31 +39,31 @@ def show_public_api_examples(node: VirtualNode) -> None:
     print(f"      node.public_key_path -> {node.public_key_path}")
     print(f"      node.meshdb_path -> {node.meshdb_path}")
     print("      node.start() / node.stop()")
+    print("      node.receive(on_receive) / node.unreceive(on_receive)")
+    print("      node.close()")
     print("      node.send_text('!1234abcd', 'hello')")
+    print("      node.sendText('hello', destinationId='!1234abcd')")
     print("      node.send_reply('!1234abcd', 'hello', reply_id=123)")
     print("      node.send_nodeinfo()")
+    print("      node.sendPosition(latitude=45.52, longitude=-122.67)")
     print("      node.send_position()  # requires position.enabled and coordinates in node.json")
+    print("      node.getMyNodeInfo() / node.getMyUser() / node.getLongName()")
     print("      node.is_direct_message_for_me(packet)")
     print("      node.is_text_message(packet)")
     print("      node.get_text_message(packet)")
     print("      node.reply_to_packet(packet, 'message received')")
 
 
-EMBEDDED_NODE: Optional[VirtualNode] = None
-
-
 def main() -> int:
     # This is the basic application-side embedding pattern:
     # 1. Build the node from a config file.
-    # 2. Subscribe your app callbacks.
+    # 2. Register a receive callback.
     # 3. Start the node.
     # 4. Use the public API while it is running.
     # 5. Stop it in finally.
-    global EMBEDDED_NODE
     node = VirtualNode(VNODE_FILE)
-    EMBEDDED_NODE = node
-    # Subscribe to the deduplicated packet topic so the app sees one callback per packet.
-    pub.subscribe(on_packet, VirtualNode.PACKET_TOPIC)
+    # receive() mirrors meshtastic.receive(packet, interface).
+    node.receive(on_receive)
 
     try:
         node.start()
@@ -90,9 +75,10 @@ def main() -> int:
         print(f"[SEND] nodeinfo packet_id={nodeinfo_packet_id}")
 
         if STARTUP_DESTINATION:
-            # This shows that app code can call the normal public send API directly.
+            # Both vnode snake_case and Meshtastic-style camelCase sends are available.
             packet_id = node.send_text(STARTUP_DESTINATION, STARTUP_MESSAGE)
             print(f"[SEND] packet_id={packet_id}")
+            node.sendText(STARTUP_MESSAGE, destinationId=STARTUP_DESTINATION)
 
         # Public API example: position sending uses the values from node.json when enabled.
         # Example:
@@ -108,13 +94,9 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        try:
-            pub.unsubscribe(on_packet, VirtualNode.PACKET_TOPIC)
-        except KeyError:
-            pass
-        # node.stop() closes sockets and stops background work started by node.start().
-        node.stop()
-        EMBEDDED_NODE = None
+        node.unreceive(on_receive)
+        # close() is a Meshtastic-style alias for stop().
+        node.close()
         print("[STOP] Embedded vnode stopped")
 
     return 0

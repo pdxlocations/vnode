@@ -5,11 +5,13 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from types import SimpleNamespace
+from typing import Any, Callable, Dict, Optional, Union
 
 import meshdb
+from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import DecodeError
-from meshtastic import BROADCAST_NUM, config_pb2, mesh_pb2, portnums_pb2
+from meshtastic import BROADCAST_ADDR, BROADCAST_NUM, config_pb2, mesh_pb2, portnums_pb2
 from mudp import UDPPacketStream
 from mudp.encryption import encrypt_packet as mudp_encrypt_packet
 from mudp.reliability import is_ack, is_nak, publish_ack, register_pending_ack, send_ack
@@ -62,6 +64,7 @@ def resolve_role(value: Union[str, int]) -> int:
 
 
 class VirtualNode:
+    RECEIVE_TOPIC = "mesh.rx.packet"
     PACKET_TOPIC = "mesh.rx.unique_packet"
     DUPLICATE_TOPIC = "mesh.rx.duplicate"
 
@@ -81,6 +84,11 @@ class VirtualNode:
         self._last_nodeinfo_sent_monotonic = 0.0
         self._last_position_reply_monotonic = 0.0
         self._last_nodeinfo_seen: Dict[int, int] = {}
+        self._response_handlers: Dict[int, tuple[Callable[[Dict[str, Any]], Any], bool]] = {}
+        self.nodesByNum: Dict[int, Dict[str, Any]] = {}
+        self.nodes: Dict[str, Dict[str, Any]] = {}
+        self.myInfo = SimpleNamespace(my_node_num=self.node_num)
+        self._connected = False
 
         self._ensure_security_keys()
         self._write_public_key_file()
@@ -121,6 +129,7 @@ class VirtualNode:
             is_licensed=int(self.config.is_licensed),
             public_key=self._public_key_b64,
         )
+        self._upsert_local_node_cache()
 
     def _configure_mudp_globals(self) -> None:
         mudp_node.node_id = self.config.node_id
@@ -148,6 +157,10 @@ class VirtualNode:
             parse_payload=False,
         )
         self.stream.start()
+        self._connected = True
+        self._publish_log_line(f"virtual node connected: {self.config.node_id}")
+        pub.sendMessage("meshtastic.connection.established", interface=self)
+        self._publish_node_updated(self.nodesByNum[self.node_num])
         if self.config.broadcasts.send_startup_nodeinfo:
             self.send_nodeinfo()
         self._broadcast_thread = threading.Thread(
@@ -159,6 +172,8 @@ class VirtualNode:
 
     def stop(self) -> None:
         self._stop.set()
+        was_connected = self._connected
+        self._connected = False
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
@@ -172,6 +187,9 @@ class VirtualNode:
             pass
         if self._broadcast_thread and self._broadcast_thread.is_alive():
             self._broadcast_thread.join(timeout=2.0)
+        if was_connected:
+            self._publish_log_line(f"virtual node disconnected: {self.config.node_id}")
+            pub.sendMessage("meshtastic.connection.lost", interface=self)
 
     def run_forever(self) -> None:
         self.start()
@@ -180,6 +198,133 @@ class VirtualNode:
                 pass
         finally:
             self.stop()
+
+    def receive(self, callback: Callable[..., Any]) -> None:
+        pub.subscribe(callback, "meshtastic.receive")
+
+    def unreceive(self, callback: Callable[..., Any]) -> None:
+        try:
+            pub.unsubscribe(callback, "meshtastic.receive")
+        except KeyError:
+            pass
+
+    def close(self) -> None:
+        self.stop()
+
+    def sendText(
+        self,
+        text: str,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        onResponse: Optional[Callable[[dict], Any]] = None,
+        channelIndex: int = 0,
+        portNum: int = portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+        replyId: Optional[int] = None,
+        hopLimit: Optional[int] = None,
+    ) -> mesh_pb2.MeshPacket:
+        return self.sendData(
+            text.encode("utf-8"),
+            destinationId=destinationId,
+            portNum=portNum,
+            wantAck=wantAck,
+            wantResponse=wantResponse,
+            onResponse=onResponse,
+            channelIndex=channelIndex,
+            hopLimit=hopLimit,
+            replyId=replyId,
+        )
+
+    def sendData(
+        self,
+        data: Any,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        portNum: int = portnums_pb2.PortNum.PRIVATE_APP,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        onResponse: Optional[Callable[[dict], Any]] = None,
+        onResponseAckPermitted: bool = False,
+        channelIndex: int = 0,
+        hopLimit: Optional[int] = None,
+        pkiEncrypted: bool = False,
+        publicKey: Optional[bytes] = None,
+        priority: int = mesh_pb2.MeshPacket.Priority.RELIABLE,
+        replyId: Optional[int] = None,
+    ) -> mesh_pb2.MeshPacket:
+        if channelIndex != 0:
+            raise ValueError("vnode currently supports only channelIndex=0")
+        if getattr(data, "SerializeToString", None):
+            data = data.SerializeToString()
+        payload = bytes(data)
+        destination_num = self._resolve_destination(destinationId)
+
+        decoded = mesh_pb2.Data()
+        decoded.portnum = int(portNum)
+        decoded.payload = payload
+        decoded.source = self.node_num
+        decoded.dest = destination_num
+        decoded.want_response = bool(wantResponse)
+        if replyId is not None:
+            decoded.reply_id = int(replyId)
+
+        packet = self._send_packet(
+            decoded,
+            destination=destination_num,
+            force_pki=bool(pkiEncrypted),
+            hop_limit=hopLimit,
+            hop_start=None,
+            want_ack=bool(wantAck),
+            priority=priority,
+            remote_public_key=publicKey,
+        )
+        if onResponse is not None:
+            self._response_handlers[int(packet.id)] = (onResponse, bool(onResponseAckPermitted))
+        return self._packet_for_return(packet, decoded)
+
+    def sendPosition(
+        self,
+        latitude: float = 0.0,
+        longitude: float = 0.0,
+        altitude: int = 0,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        channelIndex: int = 0,
+        hopLimit: Optional[int] = None,
+    ) -> mesh_pb2.MeshPacket:
+        position = mesh_pb2.Position()
+        if latitude != 0.0:
+            position.latitude_i = int(latitude / 1e-7)
+        if longitude != 0.0:
+            position.longitude_i = int(longitude / 1e-7)
+        if altitude != 0:
+            position.altitude = int(altitude)
+        return self.sendData(
+            position,
+            destinationId=destinationId,
+            portNum=portnums_pb2.PortNum.POSITION_APP,
+            wantAck=wantAck,
+            wantResponse=wantResponse,
+            channelIndex=channelIndex,
+            hopLimit=hopLimit,
+        )
+
+    def getMyNodeInfo(self) -> Optional[Dict[str, Any]]:
+        return self.nodesByNum.get(self.node_num)
+
+    def getMyUser(self) -> Optional[Dict[str, Any]]:
+        node_info = self.getMyNodeInfo()
+        if node_info is None:
+            return None
+        user = node_info.get("user")
+        return user if isinstance(user, dict) else None
+
+    def getLongName(self) -> Optional[str]:
+        user = self.getMyUser()
+        if user is None:
+            return None
+        value = user.get("longName")
+        return str(value) if value is not None else None
 
     def connect_send_socket(self) -> None:
         if getattr(conn, "socket", None) is None:
@@ -381,12 +526,36 @@ class VirtualNode:
         hop_start: Optional[int] = None,
         want_ack: bool = False,
     ) -> int:
+        packet = self._send_packet(
+            data,
+            destination=destination,
+            force_pki=force_pki,
+            hop_limit=hop_limit,
+            hop_start=hop_start,
+            want_ack=want_ack,
+        )
+        return packet.id
+
+    def _send_packet(
+        self,
+        data: mesh_pb2.Data,
+        *,
+        destination: int,
+        force_pki: bool,
+        hop_limit: Optional[int] = None,
+        hop_start: Optional[int] = None,
+        want_ack: bool = False,
+        priority: Optional[int] = None,
+        remote_public_key: Optional[bytes] = None,
+    ) -> mesh_pb2.MeshPacket:
         self.connect_send_socket()
         packet = mesh_pb2.MeshPacket()
         packet.id = self._next_packet_id()
         setattr(packet, "from", self.node_num)
         packet.to = int(destination)
         packet.want_ack = bool(want_ack)
+        if priority is not None:
+            packet.priority = int(priority)
         resolved_hop_limit = int(self.config.hop_limit if hop_limit is None else hop_limit)
         resolved_hop_start = int(resolved_hop_limit if hop_start is None else hop_start)
         if resolved_hop_start < resolved_hop_limit:
@@ -395,14 +564,15 @@ class VirtualNode:
         packet.hop_start = resolved_hop_start
 
         if force_pki:
-            remote_public_key = self._lookup_public_key(destination)
-            if remote_public_key is None:
+            key_bytes = remote_public_key if remote_public_key is not None else self._lookup_public_key(destination)
+            if key_bytes is None:
                 raise ValueError(f"Destination {destination} does not have a stored public key in meshdb")
             packet.channel = 0
             packet.pki_encrypted = True
+            packet.public_key = key_bytes
             packet.encrypted = encrypt_dm(
                 sender_private_key=b64_decode(self.config.security.private_key),
-                receiver_public_key=remote_public_key,
+                receiver_public_key=key_bytes,
                 packet_id=packet.id,
                 from_node=self.node_num,
                 plaintext=data.SerializeToString(),
@@ -419,20 +589,21 @@ class VirtualNode:
         register_pending_ack(packet, raw_packet)
         conn.sendto(raw_packet, (conn.host, conn.port))
         self._persist_outbound_packet(packet, data)
-        return packet.id
+        return packet
 
-    def _handle_raw_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
-        del addr
+    def _handle_raw_packet(self, packet: mesh_pb2.MeshPacket, **kwargs: Any) -> None:
+        del kwargs
         if not getattr(packet, "rx_time", 0):
             packet.rx_time = int(time.time())
 
         if not packet.HasField("decoded"):
             self._try_decode_pki(packet)
+        self._publish_meshtastic_receive(packet)
         self._maybe_send_ack(packet)
         self._maybe_send_response(packet)
 
-    def _handle_unique_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
-        del addr
+    def _handle_unique_packet(self, packet: mesh_pb2.MeshPacket, **kwargs: Any) -> None:
+        del kwargs
         if not getattr(packet, "rx_time", 0):
             packet.rx_time = int(time.time())
         if not packet.HasField("decoded"):
@@ -441,6 +612,186 @@ class VirtualNode:
             return
 
         self._persist_packet(packet)
+        self._update_node_cache_from_packet(packet)
+
+    def _packet_to_receive_dict(self, packet: mesh_pb2.MeshPacket) -> Dict[str, Any]:
+        as_dict = MessageToDict(packet)
+        as_dict["raw"] = packet
+
+        if "from" not in as_dict:
+            as_dict["from"] = 0
+        if "to" not in as_dict:
+            as_dict["to"] = 0
+
+        as_dict["fromId"] = self._node_num_to_id(int(as_dict["from"]), is_dest=False)
+        as_dict["toId"] = self._node_num_to_id(int(as_dict["to"]), is_dest=True)
+
+        if "decoded" in as_dict and packet.HasField("decoded"):
+            as_dict["decoded"]["payload"] = packet.decoded.payload
+            if packet.decoded.portnum in TEXT_PORTNUMS:
+                as_dict["decoded"]["text"] = packet.decoded.payload.decode("utf-8", "ignore")
+            elif packet.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:
+                position = mesh_pb2.Position()
+                try:
+                    position.ParseFromString(packet.decoded.payload)
+                    position_dict = MessageToDict(position)
+                    position_dict["raw"] = position
+                    as_dict["decoded"]["position"] = position_dict
+                except DecodeError:
+                    pass
+            elif packet.decoded.portnum == portnums_pb2.PortNum.NODEINFO_APP:
+                user = mesh_pb2.User()
+                try:
+                    user.ParseFromString(packet.decoded.payload)
+                    user_dict = MessageToDict(user)
+                    user_dict["raw"] = user
+                    as_dict["decoded"]["user"] = user_dict
+                except DecodeError:
+                    pass
+
+        return as_dict
+
+    def _node_num_to_id(self, node_num: int, *, is_dest: bool) -> Optional[str]:
+        if node_num == BROADCAST_NUM:
+            return "^all" if is_dest else "Unknown"
+        if node_num == self.node_num:
+            return self.config.node_id
+
+        return f"!{int(node_num):08x}"
+
+    def _packet_for_return(self, packet: mesh_pb2.MeshPacket, data: mesh_pb2.Data) -> mesh_pb2.MeshPacket:
+        returned = mesh_pb2.MeshPacket()
+        returned.CopyFrom(packet)
+        returned.decoded.CopyFrom(data)
+        return returned
+
+    def _publish_meshtastic_receive(self, packet: mesh_pb2.MeshPacket) -> None:
+        if int(getattr(packet, "from", 0) or 0) == self.node_num:
+            return
+        packet_dict = self._packet_to_receive_dict(packet)
+        self._dispatch_response_handler(packet, packet_dict)
+        topic = "meshtastic.receive"
+        if packet.HasField("decoded"):
+            portnum_name = str(packet_dict.get("decoded", {}).get("portnum", "UNKNOWN_APP"))
+            topic = f"meshtastic.receive.data.{portnum_name}"
+            if packet.decoded.portnum in TEXT_PORTNUMS:
+                topic = "meshtastic.receive.text"
+            elif packet.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:
+                topic = "meshtastic.receive.position"
+            elif packet.decoded.portnum == portnums_pb2.PortNum.NODEINFO_APP:
+                topic = "meshtastic.receive.user"
+        pub.sendMessage(topic, packet=packet_dict, interface=self)
+
+    def _dispatch_response_handler(self, packet: mesh_pb2.MeshPacket, packet_dict: Dict[str, Any]) -> None:
+        decoded = packet_dict.get("decoded")
+        if not isinstance(decoded, dict):
+            return
+        request_id = decoded.get("requestId")
+        if request_id is None:
+            return
+        try:
+            request_id_num = int(request_id)
+        except (TypeError, ValueError):
+            return
+        handler = self._response_handlers.get(request_id_num)
+        if handler is None:
+            return
+        callback, ack_permitted = handler
+        if is_ack(packet) and not ack_permitted and getattr(callback, "__name__", "") != "onAckNak":
+            return
+        self._response_handlers.pop(request_id_num, None)
+        callback(packet_dict)
+
+    def _upsert_local_node_cache(self) -> None:
+        node = self._default_node_dict(self.node_num)
+        node["user"].update(
+            {
+                "id": self.config.node_id,
+                "longName": self.config.long_name,
+                "shortName": self.config.short_name,
+                "hwModel": str(self.config.hw_model),
+                "role": str(self.config.role),
+                "publicKey": self._public_key_b64,
+                "isLicensed": bool(self.config.is_licensed),
+            }
+        )
+        if (
+            self.config.position.enabled
+            and self.config.position.latitude is not None
+            and self.config.position.longitude is not None
+        ):
+            node["position"] = {
+                "latitudeI": int(float(self.config.position.latitude) * 1e7),
+                "longitudeI": int(float(self.config.position.longitude) * 1e7),
+            }
+            if self.config.position.altitude is not None:
+                node["position"]["altitude"] = int(self.config.position.altitude)
+        self.nodesByNum[self.node_num] = node
+        self.nodes[self.config.node_id] = node
+
+    def _default_node_dict(self, node_num: int) -> Dict[str, Any]:
+        node_id = f"!{int(node_num):08x}"
+        return {
+            "num": int(node_num),
+            "user": {
+                "id": node_id,
+                "longName": f"Meshtastic {node_id[-4:]}",
+                "shortName": node_id[-4:],
+                "hwModel": "UNSET",
+            },
+        }
+
+    def _update_node_cache_from_packet(self, packet: mesh_pb2.MeshPacket) -> None:
+        sender = int(getattr(packet, "from", 0) or 0)
+        if sender == 0:
+            return
+        packet_dict = self._packet_to_receive_dict(packet)
+        node = dict(self.nodesByNum.get(sender, self._default_node_dict(sender)))
+        changed = sender not in self.nodesByNum
+
+        rx_time = packet_dict.get("rxTime")
+        if rx_time is not None and node.get("lastHeard") != rx_time:
+            node["lastHeard"] = rx_time
+            changed = True
+        snr = packet_dict.get("rxSnr")
+        if snr is not None and node.get("snr") != snr:
+            node["snr"] = snr
+            changed = True
+
+        decoded = packet_dict.get("decoded")
+        if isinstance(decoded, dict):
+            user = decoded.get("user")
+            if isinstance(user, dict):
+                clean_user = dict(user)
+                clean_user.pop("raw", None)
+                existing_user = node.get("user", {})
+                merged_user = dict(existing_user) if isinstance(existing_user, dict) else {}
+                merged_user.update(clean_user)
+                if merged_user != existing_user:
+                    node["user"] = merged_user
+                    changed = True
+            position = decoded.get("position")
+            if isinstance(position, dict):
+                clean_position = dict(position)
+                clean_position.pop("raw", None)
+                if clean_position != node.get("position"):
+                    node["position"] = clean_position
+                    changed = True
+
+        self.nodesByNum[sender] = node
+        user = node.get("user")
+        if isinstance(user, dict):
+            node_id = user.get("id")
+            if node_id:
+                self.nodes[str(node_id)] = node
+        if changed:
+            self._publish_node_updated(node)
+
+    def _publish_node_updated(self, node: Dict[str, Any]) -> None:
+        pub.sendMessage("meshtastic.node.updated", node=node, interface=self)
+
+    def _publish_log_line(self, line: str) -> None:
+        pub.sendMessage("meshtastic.log.line", line=str(line), interface=self)
 
     def _try_decode_pki(self, packet: mesh_pb2.MeshPacket) -> bool:
         if packet.channel != 0 or packet.to != self.node_num or not packet.encrypted:
@@ -615,6 +966,8 @@ class VirtualNode:
         if isinstance(destination, int):
             return destination
         text = str(destination).strip()
+        if text == BROADCAST_ADDR:
+            return BROADCAST_NUM
         if text.startswith("!"):
             return parse_node_id(text)
         resolved = meshdb.get_node_num(text, owner_node_num=self.node_num, db_path=self.meshdb_path)

@@ -5,9 +5,6 @@ import sys
 import time
 from pathlib import Path
 
-from meshtastic.protobuf import mesh_pb2, portnums_pb2
-from pubsub import pub
-
 try:
     from vnode import VirtualNode
 except ImportError:
@@ -23,30 +20,26 @@ class PacketPrinter:
     def __init__(self, node: VirtualNode) -> None:
         self.node = node
 
-    def on_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
-        # Packets on the app-facing topic are already deduplicated, but PKI DMs may still need
-        # local decryption before their decoded payload is visible.
-        if not packet.HasField("decoded"):
-            self.node._try_decode_pki(packet)
-
-        source = getattr(packet, "from", 0)
-        destination = getattr(packet, "to", 0)
+    def on_packet(self, packet, interface) -> None:
+        del interface
+        # node.receive() mirrors meshtastic.receive(packet, interface) with a packet dictionary.
+        source = int(packet.get("from", 0) or 0)
+        destination = int(packet.get("to", 0) or 0)
+        decoded = packet.get("decoded", {})
         summary = (
-            f"[PACKET] id={packet.id} from=!{int(source):08x} to=!{int(destination):08x} "
-            f"want_ack={bool(getattr(packet, 'want_ack', False))} "
-            f"hop={packet.hop_limit}/{packet.hop_start} "
-            f"addr={addr}"
+            f"[PACKET] id={packet.get('id')} from=!{source:08x} to=!{destination:08x} "
+            f"want_ack={bool(packet.get('wantAck', False))} "
+            f"hop={packet.get('hopLimit')}/{packet.get('hopStart')}"
         )
-        if packet.HasField("decoded"):
-            summary += f" portnum={packet.decoded.portnum}"
-        elif packet.encrypted:
+        if isinstance(decoded, dict) and decoded.get("portnum") is not None:
+            summary += f" portnum={decoded.get('portnum')}"
+        elif packet.get("encrypted"):
             summary += " portnum=<encrypted>"
         print(summary)
 
-        # Show text payloads separately so it is easy to scan the log output.
-        if packet.HasField("decoded") and packet.decoded.portnum == portnums_pb2.PortNum.TEXT_MESSAGE_APP:
-            message = packet.decoded.payload.decode("utf-8", "ignore")
-            print(f"         text={message}")
+        # Mirrored text packets expose decoded.text like the Meshtastic Python library.
+        if isinstance(decoded, dict) and decoded.get("text"):
+            print(f"         text={decoded.get('text')}")
 
 
 def main() -> int:
@@ -65,8 +58,8 @@ def main() -> int:
     printer = PacketPrinter(node)
 
     node.start()
-    # Subscribe to the runtime's deduplicated topic so repeated multicast copies do not spam logs.
-    pub.subscribe(printer.on_packet, VirtualNode.PACKET_TOPIC)
+    # Use the mirrored Meshtastic receive callback shape.
+    node.receive(printer.on_packet)
     print("Listening for packets.")
 
     try:
@@ -75,11 +68,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        try:
-            pub.unsubscribe(printer.on_packet, VirtualNode.PACKET_TOPIC)
-        except KeyError:
-            pass
-        # Stop the node to close sockets and stop the broadcast thread.
+        node.unreceive(printer.on_packet)
         node.stop()
 
 

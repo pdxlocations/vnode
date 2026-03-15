@@ -30,6 +30,7 @@ from vnode.crypto import (
     encrypt_dm,
     generate_keypair,
 )
+import vnode.runtime as runtime_module
 from vnode.runtime import VirtualNode
 
 
@@ -1210,6 +1211,108 @@ class PkiCryptoTest(unittest.TestCase):
                     "TRANSPORT_MULTICAST_UDP",
                 ),
             )
+
+    def test_receive_invokes_meshtastic_style_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            received = []
+
+            def on_receive(packet, interface) -> None:
+                received.append((packet["id"], packet["fromId"], packet["toId"], packet["raw"], interface))
+
+            packet = mesh_pb2.MeshPacket()
+            packet.id = 4242
+            setattr(packet, "from", int("12345678", 16))
+            packet.to = node.node_num
+            packet.decoded.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
+            packet.decoded.payload = b"hello"
+
+            try:
+                node.receive(on_receive)
+                node._publish_meshtastic_receive(packet)
+            finally:
+                node.unreceive(on_receive)
+
+            self.assertEqual(
+                received,
+                [(4242, "!12345678", node.config.node_id, packet, node)],
+            )
+
+    def test_sendText_returns_meshtastic_style_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+                packet = node.sendText("hello mesh")
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(packet.to, BROADCAST_NUM)
+            self.assertEqual(packet.decoded.portnum, portnums_pb2.PortNum.TEXT_MESSAGE_APP)
+            self.assertEqual(packet.decoded.payload, b"hello mesh")
+            self.assertEqual(len(sent), 1)
+
+    def test_connection_topics_are_mirrored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            events = []
+            original_stream = runtime_module.UDPPacketStream
+
+            class DummyStream:
+                def __init__(self, *args, **kwargs) -> None:
+                    pass
+
+                def start(self) -> None:
+                    return
+
+                def stop(self) -> None:
+                    return
+
+            def on_established(interface) -> None:
+                events.append(("established", interface))
+
+            def on_lost(interface) -> None:
+                events.append(("lost", interface))
+
+            try:
+                runtime_module.UDPPacketStream = DummyStream
+                pub.subscribe(on_established, "meshtastic.connection.established")
+                pub.subscribe(on_lost, "meshtastic.connection.lost")
+                node.start()
+                node.stop()
+            finally:
+                try:
+                    pub.unsubscribe(on_established, "meshtastic.connection.established")
+                except KeyError:
+                    pass
+                try:
+                    pub.unsubscribe(on_lost, "meshtastic.connection.lost")
+                except KeyError:
+                    pass
+                runtime_module.UDPPacketStream = original_stream
+
+            self.assertEqual(events, [("established", node), ("lost", node)])
 
 
 if __name__ == "__main__":

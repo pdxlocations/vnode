@@ -456,6 +456,266 @@ class PkiCryptoTest(unittest.TestCase):
             routing.ParseFromString(decoded.payload)
             self.assertEqual(routing.error_reason, mesh_pb2.Routing.Error.NONE)
 
+    def test_incoming_want_response_nodeinfo_request_triggers_nodeinfo_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4243
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.channel = 0
+                inbound.hop_limit = 3
+                inbound.hop_start = 3
+                inbound.decoded.portnum = portnums_pb2.PortNum.NODEINFO_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(sent), 1)
+            reply_packet = mesh_pb2.MeshPacket()
+            reply_packet.ParseFromString(sent[0])
+            self.assertEqual(reply_packet.to, int("12345678", 16))
+            decoded = decrypt_channel_packet(reply_packet, node.config.channel.psk)
+            self.assertIsNotNone(decoded)
+            self.assertEqual(decoded.portnum, portnums_pb2.PortNum.NODEINFO_APP)
+            self.assertEqual(decoded.request_id, 4243)
+            user = mesh_pb2.User()
+            user.ParseFromString(decoded.payload)
+            self.assertEqual(user.id, node.config.node_id)
+
+    def test_incoming_want_response_position_request_triggers_position_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            payload["position"] = {
+                "enabled": True,
+                "latitude": 45.523064,
+                "longitude": -122.676483,
+                "altitude": 27,
+                "position_interval_seconds": 900,
+            }
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4244
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.channel = 0
+                inbound.hop_limit = 3
+                inbound.hop_start = 3
+                inbound.decoded.portnum = portnums_pb2.PortNum.POSITION_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(sent), 1)
+            reply_packet = mesh_pb2.MeshPacket()
+            reply_packet.ParseFromString(sent[0])
+            self.assertEqual(reply_packet.to, int("12345678", 16))
+            decoded = decrypt_channel_packet(reply_packet, node.config.channel.psk)
+            self.assertIsNotNone(decoded)
+            self.assertEqual(decoded.portnum, portnums_pb2.PortNum.POSITION_APP)
+            self.assertEqual(decoded.request_id, 4244)
+            position = mesh_pb2.Position()
+            position.ParseFromString(decoded.payload)
+            self.assertEqual(position.latitude_i, int(45.523064 * 1e7))
+            self.assertEqual(position.longitude_i, int(-122.676483 * 1e7))
+            self.assertEqual(position.altitude, 27)
+
+    def test_incoming_want_response_position_request_without_position_sends_no_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4245
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.want_ack = True
+                inbound.channel = 0
+                inbound.hop_limit = 3
+                inbound.hop_start = 3
+                inbound.decoded.portnum = portnums_pb2.PortNum.POSITION_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(sent), 1)
+            nack_packet = mesh_pb2.MeshPacket()
+            nack_packet.ParseFromString(sent[0])
+            decoded = decrypt_channel_packet(nack_packet, node.config.channel.psk)
+            self.assertIsNotNone(decoded)
+            self.assertEqual(decoded.portnum, portnums_pb2.PortNum.ROUTING_APP)
+            self.assertEqual(decoded.request_id, 4245)
+            routing = mesh_pb2.Routing()
+            routing.ParseFromString(decoded.payload)
+            self.assertEqual(routing.error_reason, mesh_pb2.Routing.Error.NO_RESPONSE)
+
+    def test_repeated_nodeinfo_want_response_from_same_sender_is_suppressed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4246
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.rx_time = 1_700_000_000
+                inbound.decoded.portnum = portnums_pb2.PortNum.NODEINFO_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+                node._last_nodeinfo_sent_monotonic = 0.0
+
+                inbound_repeat = mesh_pb2.MeshPacket()
+                inbound_repeat.CopyFrom(inbound)
+                inbound_repeat.id = 4247
+                inbound_repeat.rx_time = inbound.rx_time + 60
+
+                node._maybe_send_response(inbound_repeat)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(sent), 1)
+
+    def test_recent_nodeinfo_send_suppresses_nodeinfo_response_without_nak(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+                node._last_nodeinfo_sent_monotonic = time.monotonic()
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4248
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.rx_time = int(time.time())
+                inbound.decoded.portnum = portnums_pb2.PortNum.NODEINFO_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(sent, [])
+
+    def test_recent_position_reply_suppresses_position_response_without_nak(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            payload["position"] = {
+                "enabled": True,
+                "latitude": 45.523064,
+                "longitude": -122.676483,
+                "altitude": 27,
+                "position_interval_seconds": 900,
+            }
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+                node._last_position_reply_monotonic = time.monotonic()
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 4249
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.decoded.portnum = portnums_pb2.PortNum.POSITION_APP
+                inbound.decoded.want_response = True
+
+                node._maybe_send_response(inbound)
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(sent, [])
+
     def test_mudp_send_text_message_registers_pending_ack(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

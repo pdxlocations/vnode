@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import random
+import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import meshdb
 from google.protobuf.message import DecodeError
@@ -27,6 +28,15 @@ PKI_DISALLOWED_PORTNUMS = {
 TEXT_PORTNUMS = {
     portnums_pb2.PortNum.TEXT_MESSAGE_APP,
     portnums_pb2.PortNum.TEXT_MESSAGE_COMPRESSED_APP,
+}
+NODEINFO_REPLY_SUPPRESS_SECONDS = 12 * 60 * 60
+POSITION_REPLY_THROTTLE_SECONDS = 3 * 60
+NODEINFO_REPLY_BASE_SECONDS = 10 * 60
+PRESET_THROTTLE_FACTORS = {
+    "LONGFAST": 2048.0 / (250.0 * 100.0),
+    "MEDIUMSLOW": 1024.0 / (250.0 * 100.0),
+    "MEDIUMFAST": 512.0 / (250.0 * 100.0),
+    "SHORTFAST": 128.0 / (250.0 * 100.0),
 }
 
 
@@ -61,12 +71,16 @@ class VirtualNode:
         self.public_key_path = self.config_path.with_suffix(".public.key")
         self.config = NodeConfig.load(self.config_path)
         self.node_num = parse_node_id(self.config.node_id)
+        self.role_num = resolve_role(self.config.role)
         self.meshdb_path = str((self.base_dir / self.config.meshdb.path).resolve())
         self.stream: Optional[UDPPacketStream] = None
         self._stop = threading.Event()
         self._broadcast_thread: Optional[threading.Thread] = None
         self._message_id = random.getrandbits(32)
         self._public_key_b64 = ""
+        self._last_nodeinfo_sent_monotonic = 0.0
+        self._last_position_reply_monotonic = 0.0
+        self._last_nodeinfo_seen: Dict[int, int] = {}
 
         self._ensure_security_keys()
         self._write_public_key_file()
@@ -172,6 +186,15 @@ class VirtualNode:
             conn.setup_multicast(self.config.udp.mcast_group, int(self.config.udp.mcast_port))
 
     def send_nodeinfo(self, destination: int = BROADCAST_NUM) -> int:
+        return self._send_nodeinfo(destination)
+
+    def _send_nodeinfo(
+        self,
+        destination: int = BROADCAST_NUM,
+        *,
+        request_id: Optional[int] = None,
+        want_ack: bool = False,
+    ) -> int:
         user = mesh_pb2.User(
             id=self.config.node_id,
             long_name=self.config.long_name,
@@ -187,7 +210,16 @@ class VirtualNode:
         data.payload = user.SerializeToString()
         data.source = self.node_num
         data.dest = int(destination)
-        return self._send_data(data, destination=int(destination), force_pki=False)
+        if request_id is not None:
+            data.request_id = int(request_id)
+        packet_id = self._send_data(
+            data,
+            destination=int(destination),
+            force_pki=False,
+            want_ack=want_ack,
+        )
+        self._last_nodeinfo_sent_monotonic = time.monotonic()
+        return packet_id
 
     def send_position(
         self,
@@ -196,6 +228,23 @@ class VirtualNode:
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
         altitude: Optional[int] = None,
+    ) -> int:
+        return self._send_position(
+            destination,
+            latitude=latitude,
+            longitude=longitude,
+            altitude=altitude,
+        )
+
+    def _send_position(
+        self,
+        destination: int = BROADCAST_NUM,
+        *,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        altitude: Optional[int] = None,
+        request_id: Optional[int] = None,
+        want_ack: bool = False,
     ) -> int:
         if not self.config.position.enabled:
             raise ValueError("Position sending is disabled in node.json")
@@ -217,7 +266,14 @@ class VirtualNode:
         data.payload = position.SerializeToString()
         data.source = self.node_num
         data.dest = int(destination)
-        return self._send_data(data, destination=int(destination), force_pki=False)
+        if request_id is not None:
+            data.request_id = int(request_id)
+        return self._send_data(
+            data,
+            destination=int(destination),
+            force_pki=False,
+            want_ack=want_ack,
+        )
 
     def send_text(
         self,
@@ -373,6 +429,7 @@ class VirtualNode:
         if not packet.HasField("decoded"):
             self._try_decode_pki(packet)
         self._maybe_send_ack(packet)
+        self._maybe_send_response(packet)
 
     def _handle_unique_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
         del addr
@@ -420,6 +477,94 @@ class VirtualNode:
             return
         ack_packet = send_ack(packet)
         publish_ack(ack_packet)
+
+    def _maybe_send_response(self, packet: mesh_pb2.MeshPacket) -> None:
+        if not packet.HasField("decoded"):
+            return
+        if int(getattr(packet, "to", BROADCAST_NUM)) != self.node_num:
+            return
+        if getattr(packet, "from", None) in (None, self.node_num):
+            return
+        if not getattr(packet.decoded, "want_response", False):
+            return
+
+        destination = int(getattr(packet, "from"))
+        request_id = int(getattr(packet, "id"))
+        want_ack = bool(getattr(packet, "want_ack", False))
+
+        if packet.decoded.portnum == portnums_pb2.PortNum.NODEINFO_APP:
+            if self._should_ignore_nodeinfo_response(packet):
+                return
+            self._send_nodeinfo(destination, request_id=request_id, want_ack=want_ack)
+            return
+
+        if packet.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:
+            if self._should_ignore_position_response():
+                return
+            if self.config.position.enabled and self.config.position.latitude is not None and self.config.position.longitude is not None:
+                self._send_position(destination, request_id=request_id, want_ack=want_ack)
+                self._last_position_reply_monotonic = time.monotonic()
+            else:
+                publish_ack(send_ack(packet, error_reason=mesh_pb2.Routing.Error.NO_RESPONSE))
+            return
+
+        publish_ack(send_ack(packet, error_reason=mesh_pb2.Routing.Error.NO_RESPONSE))
+
+    def _should_ignore_nodeinfo_response(self, packet: mesh_pb2.MeshPacket) -> bool:
+        sender = int(getattr(packet, "from"))
+        now = int(getattr(packet, "rx_time", 0) or time.time())
+        last_seen = self._last_nodeinfo_seen.get(sender)
+        self._last_nodeinfo_seen[sender] = now
+        self._prune_nodeinfo_cache()
+        if last_seen is not None:
+            since_last = now - last_seen if now >= last_seen else 0
+            if since_last < NODEINFO_REPLY_SUPPRESS_SECONDS:
+                return True
+
+        timeout_seconds = self._nodeinfo_reply_timeout_seconds()
+        if self._last_nodeinfo_sent_monotonic and (time.monotonic() - self._last_nodeinfo_sent_monotonic) < timeout_seconds:
+            return True
+        return False
+
+    def _should_ignore_position_response(self) -> bool:
+        return bool(
+            self.role_num != config_pb2.Config.DeviceConfig.Role.LOST_AND_FOUND
+            and self._last_position_reply_monotonic
+            and (time.monotonic() - self._last_position_reply_monotonic) < POSITION_REPLY_THROTTLE_SECONDS
+        )
+
+    def _nodeinfo_reply_timeout_seconds(self) -> float:
+        non_scaling_roles = {
+            config_pb2.Config.DeviceConfig.Role.ROUTER,
+            config_pb2.Config.DeviceConfig.Role.ROUTER_LATE,
+            config_pb2.Config.DeviceConfig.Role.SENSOR,
+            config_pb2.Config.DeviceConfig.Role.TRACKER,
+            config_pb2.Config.DeviceConfig.Role.TAK_TRACKER,
+        }
+        if self.role_num in non_scaling_roles:
+            return float(NODEINFO_REPLY_BASE_SECONDS)
+
+        known_nodes = self._known_node_count()
+        if known_nodes <= 40:
+            return float(NODEINFO_REPLY_BASE_SECONDS)
+        factor = PRESET_THROTTLE_FACTORS.get(self.config.channel.name.strip().upper(), PRESET_THROTTLE_FACTORS["LONGFAST"])
+        return float(NODEINFO_REPLY_BASE_SECONDS) * (1.0 + ((known_nodes - 40) * factor))
+
+    def _known_node_count(self) -> int:
+        try:
+            node_db = meshdb.NodeDB(self.node_num, self.meshdb_path)
+            node_db.ensure_table()
+            with node_db.connect() as con:
+                row = con.execute(f"SELECT COUNT(*) FROM {node_db.table}").fetchone()
+            return max(int(row[0]) if row else 0, 1)
+        except (sqlite3.Error, ValueError, TypeError):
+            return max(len(self._last_nodeinfo_seen), 1)
+
+    def _prune_nodeinfo_cache(self) -> None:
+        max_entries = self._known_node_count()
+        while self._last_nodeinfo_seen and len(self._last_nodeinfo_seen) > max_entries:
+            oldest_sender = min(self._last_nodeinfo_seen, key=self._last_nodeinfo_seen.get)
+            self._last_nodeinfo_seen.pop(oldest_sender, None)
 
     def _persist_outbound_packet(self, packet: mesh_pb2.MeshPacket, data: mesh_pb2.Data) -> None:
         stored_packet = mesh_pb2.MeshPacket()

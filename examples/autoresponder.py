@@ -6,7 +6,8 @@ import sys
 import time
 from pathlib import Path
 
-from meshtastic.protobuf import mesh_pb2
+from meshtastic import BROADCAST_NUM
+from meshtastic.protobuf import mesh_pb2, portnums_pb2
 from pubsub import pub
 
 try:
@@ -23,11 +24,74 @@ except ImportError:
 class DirectMessageAutoResponder:
     def __init__(self, node: VirtualNode) -> None:
         self.node = node
+        self.local_node_label = (
+            f"{self.node.config.long_name} ({self.node.config.short_name}, {self.node.config.node_id})"
+        )
         # Alternate between a threaded emoji reaction and a normal DM so both send styles are visible.
         self.reply_with_emoji = True
         # Keep the reply a little slower than a machine-like instant echo.
         self.min_reply_delay_seconds = 0.8
         self.max_reply_delay_seconds = 1.8
+        self._wrap_send_nodeinfo()
+
+    @staticmethod
+    def _format_node_num(node_num: int | None) -> str:
+        if node_num is None:
+            return "unknown"
+        return f"!{int(node_num):08x}"
+
+    def _format_destination(self, destination: int) -> str:
+        if int(destination) == BROADCAST_NUM:
+            return "broadcast"
+        return self._format_node_num(int(destination))
+
+    def _wrap_send_nodeinfo(self) -> None:
+        original_send_nodeinfo = self.node._send_nodeinfo
+
+        def logged_send_nodeinfo(
+            destination: int = BROADCAST_NUM,
+            *,
+            request_id: int | None = None,
+            want_ack: bool = False,
+        ) -> int:
+            packet_id = original_send_nodeinfo(
+                destination,
+                request_id=request_id,
+                want_ack=want_ack,
+            )
+            if request_id is None:
+                print(
+                    f"[NODEINFO] {self.local_node_label} sent nodeinfo to "
+                    f"{self._format_destination(destination)} as packet {packet_id}"
+                )
+            else:
+                print(
+                    f"[NODEINFO] {self.local_node_label} replied with nodeinfo to "
+                    f"{self._format_destination(destination)} for request {request_id} "
+                    f"as packet {packet_id}"
+                )
+            return packet_id
+
+        self.node._send_nodeinfo = logged_send_nodeinfo
+
+    def on_raw_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
+        del addr
+        if not packet.HasField("decoded"):
+            return
+        if packet.decoded.portnum != portnums_pb2.PortNum.NODEINFO_APP:
+            return
+        if int(getattr(packet, "to", BROADCAST_NUM)) != self.node.node_num:
+            return
+        if getattr(packet, "from", None) in (None, self.node.node_num):
+            return
+        if not getattr(packet.decoded, "want_response", False):
+            return
+
+        print(
+            f"[NODEINFO] Request from {self._format_node_num(int(getattr(packet, 'from')))} "
+            f"to {self.local_node_label} on channel {self.node.config.channel.name} "
+            f"for packet {packet.id}"
+        )
 
     def on_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
         del addr
@@ -102,7 +166,13 @@ def main() -> int:
     node = VirtualNode(args.vnode_file)
     responder = DirectMessageAutoResponder(node)
 
+    print(
+        f"[NODE] Local node: {responder.local_node_label} "
+        f"as {responder._format_node_num(node.node_num)} "
+        f"on channel {node.config.channel.name}"
+    )
     node.start()
+    pub.subscribe(responder.on_raw_packet, "mesh.rx.packet")
     # Subscribe to the deduplicated packet topic so app code sees each packet once.
     # The runtime still processes raw packets internally for ACK and PKI decode behavior.
     pub.subscribe(responder.on_packet, VirtualNode.PACKET_TOPIC)
@@ -117,6 +187,10 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        try:
+            pub.unsubscribe(responder.on_raw_packet, "mesh.rx.packet")
+        except KeyError:
+            pass
         try:
             pub.unsubscribe(responder.on_packet, VirtualNode.PACKET_TOPIC)
         except KeyError:

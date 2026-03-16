@@ -861,8 +861,99 @@ class PkiCryptoTest(unittest.TestCase):
             self.assertIs(interface, node)
             self.assertEqual(packet["from"], int("12345678", 16))
             self.assertEqual(packet["to"], node.node_num)
+            self.assertEqual(packet["decoded"]["portnum"], "TEXT_MESSAGE_APP")
+            self.assertEqual(packet["decoded"]["payload"], b"hello")
             self.assertEqual(packet["decoded"]["text"], "hello")
             self.assertIs(packet["raw"], inbound)
+
+    def test_sendText_compat_returns_meshpacket(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            sent: list[bytes] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: sent.append(data)
+
+                packet = node.sendText(
+                    "compat hello",
+                    destinationId="!12345678",
+                    wantAck=True,
+                    replyId=5150,
+                    hopLimit=5,
+                )
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(sent), 1)
+            self.assertIsInstance(packet, mesh_pb2.MeshPacket)
+            self.assertEqual(packet.to, int("12345678", 16))
+            self.assertTrue(packet.want_ack)
+            self.assertEqual(packet.hop_limit, 5)
+            decoded = decrypt_channel_packet(packet, node.config.channel.psk)
+            self.assertIsNotNone(decoded)
+            self.assertEqual(decoded.portnum, portnums_pb2.PortNum.TEXT_MESSAGE_APP)
+            self.assertEqual(decoded.reply_id, 5150)
+            self.assertEqual(decoded.payload, b"compat hello")
+
+    def test_sendData_onResponse_callback_receives_matching_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            callbacks: list[dict[str, object]] = []
+            original_sendto = conn.sendto
+            original_host = conn.host
+            original_port = conn.port
+            try:
+                node.connect_send_socket = lambda: None
+                conn.host = "224.0.0.69"
+                conn.port = 4403
+                conn.sendto = lambda data, addr: None
+
+                outbound = node.sendData(
+                    b"request",
+                    destinationId="!12345678",
+                    portNum=portnums_pb2.PortNum.PRIVATE_APP,
+                    wantResponse=True,
+                    onResponse=lambda packet: callbacks.append(packet),
+                )
+
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 6001
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.decoded.portnum = portnums_pb2.PortNum.POSITION_APP
+                inbound.decoded.request_id = outbound.id
+                inbound.decoded.payload = mesh_pb2.Position(
+                    latitude_i=int(45.523064 * 1e7),
+                    longitude_i=int(-122.676483 * 1e7),
+                ).SerializeToString()
+
+                node._handle_compat_response_packet(
+                    node._mesh_interface_packet_dict(inbound),
+                    node,
+                )
+            finally:
+                conn.sendto = original_sendto
+                conn.host = original_host
+                conn.port = original_port
+
+            self.assertEqual(len(callbacks), 1)
+            self.assertEqual(callbacks[0]["decoded"]["portnum"], "POSITION_APP")
+            self.assertEqual(callbacks[0]["decoded"]["requestId"], outbound.id)
 
     def test_autoresponder_ignores_broadcast_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

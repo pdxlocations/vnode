@@ -60,6 +60,16 @@ This example does not use CLI arguments; edit the constants at the top of the fi
 .venv/bin/python examples/library_embed.py
 ```
 
+## MeshInterface compatibility
+
+Shows a few Meshtastic `MeshInterface`-style calls against `VirtualNode`, including
+`sendText()`, `sendAlert()`, `sendData()`, `sendPosition()`, and the `meshtastic.receive`
+callback shape.
+
+```bash
+.venv/bin/python examples/mesh_interface_compat.py
+```
+
 ## Watch ACK and retry events
 
 Subscribes to `mudp` reliability events and prints ACK, NAK, retry, and max-retransmit updates.

@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from google.protobuf.json_format import MessageToDict
 import meshdb
 from google.protobuf.message import DecodeError
-from meshtastic import BROADCAST_NUM, config_pb2, mesh_pb2, portnums_pb2
+from meshtastic import BROADCAST_ADDR, BROADCAST_NUM, LOCAL_ADDR, config_pb2, mesh_pb2, portnums_pb2, protocols
 from mudp import UDPPacketStream
 from mudp.encryption import encrypt_packet as mudp_encrypt_packet
 from mudp.reliability import is_ack, is_nak, publish_ack, register_pending_ack, send_ack
@@ -82,6 +83,7 @@ class VirtualNode:
         self._last_nodeinfo_sent_monotonic = 0.0
         self._last_position_reply_monotonic = 0.0
         self._last_nodeinfo_seen: Dict[int, int] = {}
+        self._response_handlers: Dict[int, Dict[str, Any]] = {}
 
         self._ensure_security_keys()
         self._write_public_key_file()
@@ -142,6 +144,9 @@ class VirtualNode:
             return
         pub.subscribe(self._handle_raw_packet, "mesh.rx.packet")
         pub.subscribe(self._handle_unique_packet, self.PACKET_TOPIC)
+        pub.subscribe(self._handle_compat_response_packet, self.RECEIVE_TOPIC)
+        pub.subscribe(self._handle_compat_ack, "mesh.rx.ack")
+        pub.subscribe(self._handle_compat_nak, "mesh.rx.nak")
         self.stream = UDPPacketStream(
             self.config.udp.mcast_group,
             int(self.config.udp.mcast_port),
@@ -171,6 +176,15 @@ class VirtualNode:
             pub.unsubscribe(self._handle_unique_packet, self.PACKET_TOPIC)
         except KeyError:
             pass
+        for topic, listener in (
+            (self.RECEIVE_TOPIC, self._handle_compat_response_packet),
+            ("mesh.rx.ack", self._handle_compat_ack),
+            ("mesh.rx.nak", self._handle_compat_nak),
+        ):
+            try:
+                pub.unsubscribe(listener, topic)
+            except KeyError:
+                pass
         if self._broadcast_thread and self._broadcast_thread.is_alive():
             self._broadcast_thread.join(timeout=2.0)
 
@@ -190,6 +204,161 @@ class VirtualNode:
             pub.unsubscribe(callback, self.RECEIVE_TOPIC)
         except KeyError:
             pass
+
+    def close(self) -> None:
+        self.stop()
+
+    def getLongName(self):
+        return self.config.long_name
+
+    def getShortName(self):
+        return self.config.short_name
+
+    def getPublicKey(self):
+        return b64_decode(self._public_key_b64) if self._public_key_b64 else None
+
+    def getMyUser(self):
+        user = mesh_pb2.User(
+            id=self.config.node_id,
+            long_name=self.config.long_name,
+            short_name=self.config.short_name,
+            hw_model=resolve_hw_model(self.config.hw_model),
+        )
+        user.role = resolve_role(self.config.role)
+        if self._public_key_b64:
+            user.public_key = b64_decode(self._public_key_b64)
+        return MessageToDict(user, preserving_proto_field_name=False, use_integers_for_enums=False)
+
+    def getMyNodeInfo(self):
+        return {
+            "num": self.node_num,
+            "user": self.getMyUser(),
+        }
+
+    def sendText(
+        self,
+        text: str,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        onResponse=None,
+        channelIndex: int = 0,
+        portNum: int = portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+        replyId: Optional[int] = None,
+        hopLimit: Optional[int] = None,
+    ):
+        return self.sendData(
+            text.encode("utf-8"),
+            destinationId=destinationId,
+            portNum=portNum,
+            wantAck=wantAck,
+            wantResponse=wantResponse,
+            onResponse=onResponse,
+            channelIndex=channelIndex,
+            hopLimit=hopLimit,
+            replyId=replyId,
+        )
+
+    def sendAlert(
+        self,
+        text: str,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        onResponse=None,
+        channelIndex: int = 0,
+        hopLimit: Optional[int] = None,
+    ):
+        return self.sendData(
+            text.encode("utf-8"),
+            destinationId=destinationId,
+            portNum=portnums_pb2.PortNum.ALERT_APP,
+            wantAck=False,
+            wantResponse=False,
+            onResponse=onResponse,
+            channelIndex=channelIndex,
+            hopLimit=hopLimit,
+            priority=mesh_pb2.MeshPacket.Priority.ALERT,
+        )
+
+    def sendData(
+        self,
+        data,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        portNum: int = portnums_pb2.PortNum.PRIVATE_APP,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        onResponse=None,
+        onResponseAckPermitted: bool = False,
+        channelIndex: int = 0,
+        hopLimit: Optional[int] = None,
+        pkiEncrypted: Optional[bool] = False,
+        publicKey: Optional[bytes] = None,
+        priority: int = mesh_pb2.MeshPacket.Priority.RELIABLE,
+        replyId: Optional[int] = None,
+    ):
+        if getattr(data, "SerializeToString", None):
+            data = data.SerializeToString()
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError("data must be bytes or a protobuf with SerializeToString()")
+        if int(channelIndex) != 0:
+            raise NotImplementedError("Only channelIndex=0 is currently supported")
+        if publicKey is not None:
+            raise NotImplementedError("publicKey override is not currently supported")
+        if int(portNum) == portnums_pb2.PortNum.UNKNOWN_APP:
+            raise ValueError("A non-zero port number must be specified")
+
+        destination = self._resolve_destination_compat(destinationId)
+        force_pki = bool(pkiEncrypted)
+        data_message = mesh_pb2.Data()
+        data_message.portnum = int(portNum)
+        data_message.payload = bytes(data)
+        data_message.want_response = bool(wantResponse)
+        data_message.source = self.node_num
+        data_message.dest = int(destination)
+        if replyId is not None:
+            data_message.reply_id = int(replyId)
+
+        packet = self._send_data_packet(
+            data_message,
+            destination=int(destination),
+            force_pki=force_pki,
+            hop_limit=hopLimit,
+            want_ack=wantAck,
+            priority=int(priority),
+        )
+        if onResponse is not None:
+            self._response_handlers[int(packet.id)] = {
+                "callback": onResponse,
+                "ack_permitted": bool(onResponseAckPermitted) or getattr(onResponse, "__name__", "") == "onAckNak",
+            }
+        return packet
+
+    def sendPosition(
+        self,
+        latitude: float = 0.0,
+        longitude: float = 0.0,
+        altitude: int = 0,
+        destinationId: Union[int, str] = BROADCAST_ADDR,
+        wantAck: bool = False,
+        wantResponse: bool = False,
+        channelIndex: int = 0,
+        hopLimit: Optional[int] = None,
+    ):
+        position = mesh_pb2.Position()
+        if latitude != 0.0:
+            position.latitude_i = int(latitude * 1e7)
+        if longitude != 0.0:
+            position.longitude_i = int(longitude * 1e7)
+        if altitude != 0:
+            position.altitude = int(altitude)
+        return self.sendData(
+            position,
+            destinationId=destinationId,
+            portNum=portnums_pb2.PortNum.POSITION_APP,
+            wantAck=wantAck,
+            wantResponse=wantResponse,
+            channelIndex=channelIndex,
+            hopLimit=hopLimit,
+        )
 
     def connect_send_socket(self) -> None:
         if getattr(conn, "socket", None) is None:
@@ -390,13 +559,38 @@ class VirtualNode:
         hop_limit: Optional[int] = None,
         hop_start: Optional[int] = None,
         want_ack: bool = False,
+        priority: Optional[int] = None,
     ) -> int:
+        packet = self._send_data_packet(
+            data,
+            destination=destination,
+            force_pki=force_pki,
+            hop_limit=hop_limit,
+            hop_start=hop_start,
+            want_ack=want_ack,
+            priority=priority,
+        )
+        return packet.id
+
+    def _send_data_packet(
+        self,
+        data: mesh_pb2.Data,
+        *,
+        destination: int,
+        force_pki: bool,
+        hop_limit: Optional[int] = None,
+        hop_start: Optional[int] = None,
+        want_ack: bool = False,
+        priority: Optional[int] = None,
+    ) -> mesh_pb2.MeshPacket:
         self.connect_send_socket()
         packet = mesh_pb2.MeshPacket()
         packet.id = self._next_packet_id()
         setattr(packet, "from", self.node_num)
         packet.to = int(destination)
         packet.want_ack = bool(want_ack)
+        if priority is not None:
+            packet.priority = int(priority)
         resolved_hop_limit = int(self.config.hop_limit if hop_limit is None else hop_limit)
         resolved_hop_start = int(resolved_hop_limit if hop_start is None else hop_start)
         if resolved_hop_start < resolved_hop_limit:
@@ -429,7 +623,7 @@ class VirtualNode:
         register_pending_ack(packet, raw_packet)
         conn.sendto(raw_packet, (conn.host, conn.port))
         self._persist_outbound_packet(packet, data)
-        return packet.id
+        return packet
 
     def _handle_raw_packet(self, packet: mesh_pb2.MeshPacket, addr: Any = None) -> None:
         del addr
@@ -594,10 +788,7 @@ class VirtualNode:
         )
 
     def _publish_receive(self, packet: mesh_pb2.MeshPacket) -> None:
-        from meshtastic import protocols
-
-        packet_dict = meshdb.normalize_packet(packet, "udp")
-        packet_dict["raw"] = packet
+        packet_dict = self._mesh_interface_packet_dict(packet)
 
         topic = self.RECEIVE_TOPIC
         decoded = packet_dict.get("decoded")
@@ -605,22 +796,93 @@ class VirtualNode:
         if isinstance(decoded, dict):
             raw_portnum = decoded.get("portnum")
             if raw_portnum is not None:
-                try:
-                    portnum = int(raw_portnum)
-                except (TypeError, ValueError):
-                    portnum = None
+                portnum = raw_portnum
 
         if portnum is not None:
-            handler = protocols.get(portnum)
+            try:
+                portnum_value = portnums_pb2.PortNum.Value(str(portnum))
+            except ValueError:
+                portnum_value = None
+            handler = protocols.get(portnum_value) if portnum_value is not None else None
             if handler is not None:
                 topic = f"{self.RECEIVE_TOPIC}.{handler.name}"
             else:
-                try:
-                    topic = f"{self.RECEIVE_TOPIC}.data.{portnums_pb2.PortNum.Name(portnum)}"
-                except ValueError:
+                if isinstance(portnum, str):
+                    topic = f"{self.RECEIVE_TOPIC}.data.{portnum}"
+                else:
                     topic = f"{self.RECEIVE_TOPIC}.data.{portnum}"
 
         pub.sendMessage(topic, packet=packet_dict, interface=self)
+
+    def _mesh_interface_packet_dict(self, packet: mesh_pb2.MeshPacket) -> Dict[str, Any]:
+        packet_dict = meshdb.normalize_packet(packet, "udp")
+        packet_dict["raw"] = packet
+
+        if packet.HasField("decoded"):
+            decoded = packet_dict.setdefault("decoded", {})
+            decoded["payload"] = bytes(packet.decoded.payload)
+            try:
+                decoded["portnum"] = portnums_pb2.PortNum.Name(int(packet.decoded.portnum))
+            except ValueError:
+                decoded["portnum"] = int(packet.decoded.portnum)
+            if getattr(packet.decoded, "want_response", False):
+                decoded["wantResponse"] = True
+            if getattr(packet.decoded, "request_id", 0):
+                decoded["requestId"] = int(packet.decoded.request_id)
+            if getattr(packet.decoded, "reply_id", 0):
+                decoded["replyId"] = int(packet.decoded.reply_id)
+            if getattr(packet.decoded, "emoji", 0):
+                decoded["emoji"] = int(packet.decoded.emoji)
+
+            handler = protocols.get(int(packet.decoded.portnum))
+            if handler is not None and getattr(handler, "protobufFactory", None) is not None:
+                try:
+                    pb = handler.protobufFactory()
+                    pb.ParseFromString(bytes(packet.decoded.payload))
+                    decoded[handler.name] = MessageToDict(
+                        pb,
+                        preserving_proto_field_name=False,
+                        use_integers_for_enums=False,
+                    )
+                except Exception:
+                    pass
+        return packet_dict
+
+    def _resolve_destination_compat(self, destination: Union[int, str]) -> int:
+        if destination == BROADCAST_ADDR:
+            return BROADCAST_NUM
+        if destination == LOCAL_ADDR:
+            return self.node_num
+        return self._resolve_destination(destination)
+
+    def _handle_compat_response_packet(self, packet, interface=None) -> None:
+        if interface is not self:
+            return
+        raw_packet = packet.get("raw") if isinstance(packet, dict) else None
+        if not isinstance(raw_packet, mesh_pb2.MeshPacket) or not raw_packet.HasField("decoded"):
+            return
+        request_id = int(getattr(raw_packet.decoded, "request_id", 0))
+        if request_id <= 0 or is_ack(raw_packet) or is_nak(raw_packet):
+            return
+        handler = self._response_handlers.pop(request_id, None)
+        if handler is not None:
+            handler["callback"](packet)
+
+    def _handle_compat_ack(self, packet, routing=None, addr=None, pending=None) -> None:
+        del routing, addr, pending
+        request_id = int(getattr(packet.decoded, "request_id", 0)) if packet.HasField("decoded") else 0
+        handler = self._response_handlers.get(request_id)
+        if handler is None or not handler["ack_permitted"]:
+            return
+        self._response_handlers.pop(request_id, None)
+        handler["callback"](self._mesh_interface_packet_dict(packet))
+
+    def _handle_compat_nak(self, packet, routing=None, addr=None, pending=None) -> None:
+        del routing, addr, pending
+        request_id = int(getattr(packet.decoded, "request_id", 0)) if packet.HasField("decoded") else 0
+        handler = self._response_handlers.pop(request_id, None)
+        if handler is not None:
+            handler["callback"](self._mesh_interface_packet_dict(packet))
 
     def _broadcast_loop(self) -> None:
         nodeinfo_interval = int(self.config.broadcasts.nodeinfo_interval_seconds)

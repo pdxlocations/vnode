@@ -1,34 +1,51 @@
+from __future__ import annotations
+
+import sys
 import time
+from pathlib import Path
+
 import meshtastic.serial_interface
 import meshtastic.util
 from pubsub import pub
-from vnode import VirtualNode
+
+try:
+    from vnode import VirtualNode
+except ImportError:
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+    SOURCE_ROOT = REPO_ROOT / "vnode"
+    if str(SOURCE_ROOT) not in sys.path:
+        # Allow running this script directly from the repository root.
+        sys.path.insert(0, str(SOURCE_ROOT))
+    from vnode import VirtualNode
+
 
 VNODE_FILE = "node.json"
 SERIAL_DEVICE = None
 
-def on_receive(packet, interface) -> None:
-    del interface
-    # Both serial Meshtastic and vnode call this as (packet_dict, interface).
-    print(packet)
-    print()
+
+def onReceive(packet, interface) -> None:
+    print(f"{packet}\n")
 
 def main() -> int:
     serial = None
-    vnode = None
+    vnode_node = None
 
     try:
         device = SERIAL_DEVICE or next(iter(meshtastic.util.findPorts(True)), None)
         if device is None:
             raise RuntimeError("no serial device attached")
         serial = meshtastic.serial_interface.SerialInterface(devPath=device, timeout=5)
-        pub.subscribe(on_receive, "meshtastic.receive")
-        print(f"connected by serial: {device}")
-    except Exception:
-        vnode = VirtualNode(VNODE_FILE)
-        vnode.receive(on_receive)
-        vnode.start()
-        print(f"using vnode {vnode.config.node_id}")
+        pub.subscribe(onReceive, "meshtastic.receive")
+        print(f"[SERIAL] Connected to {device}")
+    except Exception as exc:
+        vnode_node = VirtualNode(VNODE_FILE)
+        vnode_node.receive(onReceive)
+        vnode_node.start()
+        print(
+            f"[VNODE] Serial connection unavailable ({exc}); "
+            f"using {vnode_node.config.long_name} ({vnode_node.config.node_id}) "
+            f"on channel {vnode_node.config.channel.name}"
+        )
 
     try:
         while True:
@@ -38,13 +55,13 @@ def main() -> int:
     finally:
         if serial is not None:
             try:
-                pub.unsubscribe(on_receive, "meshtastic.receive")
+                pub.unsubscribe(onReceive, "meshtastic.receive")
             except KeyError:
                 pass
             serial.close()
-        if vnode is not None:
-            vnode.unreceive(on_receive)
-            vnode.stop()
+        if vnode_node is not None:
+            vnode_node.unreceive(onReceive)
+            vnode_node.stop()
 
     return 0
 

@@ -65,14 +65,18 @@ packet_id = node.send_text("!1234abcd", "hello")
 Use these as small runnable references for common tasks:
 
 - `examples/autoresponder.py`: DM-only reply bot for inbound direct text messages
+- `examples/basic_subscriptions.py`: minimal `node.receive()` subscription example
 - `examples/listen_packets.py`: packet logger for multicast traffic and decoded text
+- `examples/serial_or_vnode.py`: try a serial Meshtastic node first, then fall back to `VirtualNode`
 - `examples/send_dm.py`: minimal one-shot direct-message sender
 - `examples/library_embed.py`: minimal application-style embedding example using `VirtualNode` directly
 - `examples/watch_reliability.py`: watcher for ACK, NAK, retry, and retransmit-failure events
 
 ```bash
 .venv/bin/python examples/autoresponder.py
+.venv/bin/python examples/basic_subscriptions.py
 .venv/bin/python examples/listen_packets.py
+.venv/bin/python examples/serial_or_vnode.py
 .venv/bin/python examples/send_dm.py --to '!1234abcd' --message 'hello'
 .venv/bin/python examples/library_embed.py
 .venv/bin/python examples/watch_reliability.py --to '!1234abcd' --message 'hello'

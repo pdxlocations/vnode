@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from pubsub import pub
-
 try:
     from vnode import VirtualNode
 except ImportError:
@@ -24,22 +22,23 @@ STARTUP_DESTINATION = None
 STARTUP_MESSAGE = "hello from an embedded vnode"
 
 
-def on_packet(packet, addr=None) -> None:
-    del addr
+def on_receive(packet, interface=None) -> None:
+    del interface
+    raw_packet = packet.get("raw")
+    if raw_packet is None:
+        return
     # In an embedded app, this callback is where you would dispatch packets into your own logic.
-    source = getattr(packet, "from", 0)
-    destination = getattr(packet, "to", 0)
-    print(f"[RX] id={packet.id} from=!{int(source):08x} to=!{int(destination):08x}")
+    source = packet.get("from", 0)
+    destination = packet.get("to", 0)
+    print(f"[RX] id={raw_packet.id} from=!{int(source):08x} to=!{int(destination):08x}")
 
     # Public helper: only treat direct messages addressed to this node as "incoming chats".
-    if EMBEDDED_NODE is not None and EMBEDDED_NODE.is_direct_message_for_me(packet):
+    if EMBEDDED_NODE is not None and EMBEDDED_NODE.is_direct_message_for_me(raw_packet):
         print("     packet is a direct message for this node")
 
-    # Public helper: extract human-readable text when the packet is a text message.
-    if EMBEDDED_NODE is not None:
-        text = EMBEDDED_NODE.get_text_message(packet)
-        if text is not None:
-            print(f"     text={text}")
+    text = packet.get("decoded", {}).get("text")
+    if isinstance(text, str):
+        print(f"     text={text}")
 
     # Public helper: reply_to_packet() sends a threaded reply that preserves reply_id and hop settings.
     # Example:
@@ -54,6 +53,7 @@ def show_public_api_examples(node: VirtualNode) -> None:
     print(f"      node.public_key_path -> {node.public_key_path}")
     print(f"      node.meshdb_path -> {node.meshdb_path}")
     print("      node.start() / node.stop()")
+    print("      node.receive(on_receive) / node.unreceive(on_receive)")
     print("      node.send_text('!1234abcd', 'hello')")
     print("      node.send_reply('!1234abcd', 'hello', reply_id=123)")
     print("      node.send_nodeinfo()")
@@ -77,8 +77,7 @@ def main() -> int:
     global EMBEDDED_NODE
     node = VirtualNode(VNODE_FILE)
     EMBEDDED_NODE = node
-    # Subscribe to the deduplicated packet topic so the app sees one callback per packet.
-    pub.subscribe(on_packet, VirtualNode.PACKET_TOPIC)
+    node.receive(on_receive)
 
     try:
         node.start()
@@ -108,10 +107,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        try:
-            pub.unsubscribe(on_packet, VirtualNode.PACKET_TOPIC)
-        except KeyError:
-            pass
+        node.unreceive(on_receive)
         # node.stop() closes sockets and stops background work started by node.start().
         node.stop()
         EMBEDDED_NODE = None

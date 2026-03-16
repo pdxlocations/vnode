@@ -12,6 +12,26 @@ It skips duplicates, ignores replies, and alternates between an emoji and plain-
 .venv/bin/python examples/autoresponder.py --vnode-file node.json
 ```
 
+## Basic subscriptions
+
+Shows the minimal `node.receive(callback)` / `node.unreceive(callback)` pattern using
+Meshtastic-style `(packet, interface)` callbacks. Edit `VNODE_FILE` in the script if you
+want to use a config path other than `node.json`.
+
+```bash
+.venv/bin/python examples/basic_subscriptions.py
+```
+
+## Serial or vnode fallback
+
+Tries to connect to a real serial Meshtastic node first. If no serial device is available,
+it falls back to a local `VirtualNode` and keeps the same `meshtastic.receive` callback shape.
+Edit `VNODE_FILE` or `SERIAL_DEVICE` in the script if you want to change either value.
+
+```bash
+.venv/bin/python examples/serial_or_vnode.py
+```
+
 ## Print packets
 
 Prints every packet seen by the node, including decoded text when available.

@@ -828,6 +828,42 @@ class PkiCryptoTest(unittest.TestCase):
                 [(packet_id, mesh_pb2.Routing.Error.MAX_RETRANSMIT)],
             )
 
+    def test_receive_callback_matches_meshtastic_style(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            received: list[tuple[dict[str, object], object]] = []
+
+            def on_receive(packet, interface) -> None:
+                received.append((packet, interface))
+
+            node.receive(on_receive)
+            try:
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 5151
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.channel = 0
+                inbound.hop_limit = 3
+                inbound.hop_start = 3
+                inbound.decoded.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
+                inbound.decoded.payload = b"hello"
+
+                node._handle_unique_packet(inbound)
+            finally:
+                node.unreceive(on_receive)
+
+            self.assertEqual(len(received), 1)
+            packet, interface = received[0]
+            self.assertIs(interface, node)
+            self.assertEqual(packet["from"], int("12345678", 16))
+            self.assertEqual(packet["to"], node.node_num)
+            self.assertEqual(packet["decoded"]["text"], "hello")
+            self.assertIs(packet["raw"], inbound)
+
     def test_autoresponder_ignores_broadcast_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -850,7 +886,15 @@ class PkiCryptoTest(unittest.TestCase):
                 inbound.decoded.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
                 inbound.decoded.payload = b"hello everyone"
 
-                responder.on_packet(inbound)
+                responder.on_receive(
+                    {
+                        "from": int("12345678", 16),
+                        "to": BROADCAST_NUM,
+                        "decoded": {"text": "hello everyone"},
+                        "raw": inbound,
+                    },
+                    node,
+                )
             finally:
                 node.send_reply = original_send_reply
 

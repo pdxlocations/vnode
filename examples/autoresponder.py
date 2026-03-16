@@ -8,7 +8,6 @@ from pathlib import Path
 
 from meshtastic import BROADCAST_NUM
 from meshtastic.protobuf import mesh_pb2, portnums_pb2
-from pubsub import pub
 
 try:
     from vnode import VirtualNode
@@ -74,43 +73,38 @@ class DirectMessageAutoResponder:
 
         self.node._send_nodeinfo = logged_send_nodeinfo
 
-    def on_raw_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
-        del addr
-        if not packet.HasField("decoded"):
-            return
-        if packet.decoded.portnum != portnums_pb2.PortNum.NODEINFO_APP:
-            return
-        if int(getattr(packet, "to", BROADCAST_NUM)) != self.node.node_num:
-            return
-        if getattr(packet, "from", None) in (None, self.node.node_num):
-            return
-        if not getattr(packet.decoded, "want_response", False):
+    def on_receive(self, packet: dict, interface=None) -> None:
+        raw_packet = packet.get("raw")
+        if not isinstance(raw_packet, mesh_pb2.MeshPacket):
             return
 
-        print(
-            f"[NODEINFO] Request from {self._format_node_num(int(getattr(packet, 'from')))} "
-            f"to {self.local_node_label} on channel {self.node.config.channel.name} "
-            f"for packet {packet.id}"
-        )
+        if (
+            raw_packet.decoded.portnum == portnums_pb2.PortNum.NODEINFO_APP
+            and int(getattr(raw_packet, "to", BROADCAST_NUM)) == self.node.node_num
+            and getattr(raw_packet, "from", None) not in (None, self.node.node_num)
+            and getattr(raw_packet.decoded, "want_response", False)
+        ):
+            print(
+                f"[NODEINFO] Request from {self._format_node_num(int(getattr(raw_packet, 'from')))} "
+                f"to {self.local_node_label} on channel {self.node.config.channel.name} "
+                f"for packet {raw_packet.id}"
+            )
 
-    def on_packet(self, packet: mesh_pb2.MeshPacket, addr=None) -> None:
-        del addr
         # Ignore everything except decoded text packets.
-        if not self.node.is_text_message(packet):
+        if not self.node.is_text_message(raw_packet):
             return
         # This example only answers direct messages addressed to this node.
-        if not self.node.is_direct_message_for_me(packet):
+        if not self.node.is_direct_message_for_me(raw_packet):
             return
 
-        sender_id = getattr(packet, "from", None)
+        sender_id = getattr(raw_packet, "from", None)
         # Ignore replies so the bot does not create reply chains with other bots or users.
-        if packet.decoded.reply_id:
-            print(f"[SKIP] Packet {packet.id} is already a reply to {packet.decoded.reply_id}")
+        if raw_packet.decoded.reply_id:
+            print(f"[SKIP] Packet {raw_packet.id} is already a reply to {raw_packet.decoded.reply_id}")
             return
 
-        # Use the runtime helper so PKI-decoded DMs and normal channel DMs are handled the same way.
-        message = self.node.get_text_message(packet)
-        if message is None:
+        message = packet.get("decoded", {}).get("text")
+        if not isinstance(message, str):
             return
         print(f"\n[RECV] From: !{int(sender_id):08x} Message: {message}")
 
@@ -127,7 +121,7 @@ class DirectMessageAutoResponder:
             emoji = True
             # reply_to_packet() preserves reply_id and hop settings from the inbound packet.
             reply_packet_id = self.node.reply_to_packet(
-                packet,
+                raw_packet,
                 reply_message,
                 emoji=emoji,
                 pki_mode="auto",
@@ -145,7 +139,7 @@ class DirectMessageAutoResponder:
             reply_kind = "dm"
         print(
             f"[REPLY] Sent {'emoji' if emoji else 'text'} {reply_kind} to !{int(sender_id):08x} "
-            f"for message {packet.id} as packet {reply_packet_id}: {reply_message}"
+            f"for message {raw_packet.id} as packet {reply_packet_id}: {reply_message}"
         )
 
         self.reply_with_emoji = not self.reply_with_emoji
@@ -172,10 +166,7 @@ def main() -> int:
         f"on channel {node.config.channel.name}"
     )
     node.start()
-    pub.subscribe(responder.on_raw_packet, "mesh.rx.packet")
-    # Subscribe to the deduplicated packet topic so app code sees each packet once.
-    # The runtime still processes raw packets internally for ACK and PKI decode behavior.
-    pub.subscribe(responder.on_packet, VirtualNode.PACKET_TOPIC)
+    node.receive(responder.on_receive)
 
     print("DM autoresponder listening for text messages.")
     print("Replies are always sent as direct messages.")
@@ -187,14 +178,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        try:
-            pub.unsubscribe(responder.on_raw_packet, "mesh.rx.packet")
-        except KeyError:
-            pass
-        try:
-            pub.unsubscribe(responder.on_packet, VirtualNode.PACKET_TOPIC)
-        except KeyError:
-            pass
+        node.unreceive(responder.on_receive)
         # Always stop the node so sockets and background threads are cleaned up.
         node.stop()
 

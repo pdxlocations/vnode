@@ -64,6 +64,7 @@ def resolve_role(value: Union[str, int]) -> int:
 class VirtualNode:
     PACKET_TOPIC = "mesh.rx.unique_packet"
     DUPLICATE_TOPIC = "mesh.rx.duplicate"
+    RECEIVE_TOPIC = "meshtastic.receive"
 
     def __init__(self, config_path: Union[str, Path] = "node.json") -> None:
         self.config_path = Path(config_path).resolve()
@@ -180,6 +181,15 @@ class VirtualNode:
                 pass
         finally:
             self.stop()
+
+    def receive(self, callback) -> None:
+        pub.subscribe(callback, self.RECEIVE_TOPIC)
+
+    def unreceive(self, callback) -> None:
+        try:
+            pub.unsubscribe(callback, self.RECEIVE_TOPIC)
+        except KeyError:
+            pass
 
     def connect_send_socket(self) -> None:
         if getattr(conn, "socket", None) is None:
@@ -441,6 +451,7 @@ class VirtualNode:
             return
 
         self._persist_packet(packet)
+        self._publish_receive(packet)
 
     def _try_decode_pki(self, packet: mesh_pb2.MeshPacket) -> bool:
         if packet.channel != 0 or packet.to != self.node_num or not packet.encrypted:
@@ -581,6 +592,35 @@ class VirtualNode:
             node_database_number=self.node_num,
             db_path=self.meshdb_path,
         )
+
+    def _publish_receive(self, packet: mesh_pb2.MeshPacket) -> None:
+        from meshtastic import protocols
+
+        packet_dict = meshdb.normalize_packet(packet, "udp")
+        packet_dict["raw"] = packet
+
+        topic = self.RECEIVE_TOPIC
+        decoded = packet_dict.get("decoded")
+        portnum = None
+        if isinstance(decoded, dict):
+            raw_portnum = decoded.get("portnum")
+            if raw_portnum is not None:
+                try:
+                    portnum = int(raw_portnum)
+                except (TypeError, ValueError):
+                    portnum = None
+
+        if portnum is not None:
+            handler = protocols.get(portnum)
+            if handler is not None:
+                topic = f"{self.RECEIVE_TOPIC}.{handler.name}"
+            else:
+                try:
+                    topic = f"{self.RECEIVE_TOPIC}.data.{portnums_pb2.PortNum.Name(portnum)}"
+                except ValueError:
+                    topic = f"{self.RECEIVE_TOPIC}.data.{portnum}"
+
+        pub.sendMessage(topic, packet=packet_dict, interface=self)
 
     def _broadcast_loop(self) -> None:
         nodeinfo_interval = int(self.config.broadcasts.nodeinfo_interval_seconds)

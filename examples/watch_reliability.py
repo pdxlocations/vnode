@@ -72,7 +72,8 @@ def main() -> int:
     node.start()
 
     # These pubsub topics come from mudp, not the example itself.
-    # They let app code observe ACK resolution and retry behavior without reimplementing transport logic.
+    # ACK/NAK are emitted once per logical packet on mudp's unique-only routing topics.
+    # Use mesh.rx.packet / mesh.rx.duplicate instead if you need every wire observation.
     pub.subscribe(on_ack, "mesh.rx.ack")
     pub.subscribe(on_nak, "mesh.rx.nak")
     pub.subscribe(on_retry, "mesh.tx.retry")

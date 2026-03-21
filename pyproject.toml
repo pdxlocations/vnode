@@ -1,6 +1,6 @@
 [project]
 name = "vnode"
-version = "0.1.7"
+version = "0.1.8"
 description = "Virtual Meshtastic node using mudp transport and meshdb storage."
 authors = [
     {name = "Ben Lipsey",email = "ben@pdxlocations.com"}
@@ -12,7 +12,7 @@ dependencies = [
   "cryptography>=43,<45",
   "meshdb>=0.1.9",
   "meshtastic>=2.7,<3.0",
-  "mudp>=1.1.0",
+  "mudp>=1.1.5",
 ]
 
 [project.urls]

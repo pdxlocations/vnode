@@ -16,7 +16,8 @@ It skips duplicates, ignores replies, and alternates between an emoji and plain-
 
 Shows the minimal `node.receive(callback)` / `node.unreceive(callback)` pattern using
 Meshtastic-style `(packet, interface)` callbacks. Edit `VNODE_FILE` in the script if you
-want to use a config path other than `node.json`.
+want to use a config path other than `node.json`. The callback is fed from `mudp`'s
+unique-packet topic, so duplicates are already suppressed before app code sees them.
 
 ```bash
 .venv/bin/python examples/basic_subscriptions.py
@@ -72,8 +73,9 @@ callback shape.
 
 ## Watch ACK and retry events
 
-Subscribes to `mudp` reliability events and prints ACK, NAK, retry, and max-retransmit updates.
-Optionally sends a startup DM so you can watch the full reliability lifecycle immediately.
+Subscribes to `mudp` reliability events and prints unique ACK, NAK, retry, and
+max-retransmit updates. Optionally sends a startup DM so you can watch the full
+reliability lifecycle immediately.
 
 ```bash
 .venv/bin/python examples/watch_reliability.py --vnode-file node.json --to '!1234abcd' --message 'hello'

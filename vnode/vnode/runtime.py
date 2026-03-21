@@ -63,7 +63,10 @@ def resolve_role(value: Union[str, int]) -> int:
 
 
 class VirtualNode:
+    RAW_PACKET_TOPIC = "mesh.rx.packet"
     PACKET_TOPIC = "mesh.rx.unique_packet"
+    ACK_TOPIC = "mesh.rx.ack"
+    NAK_TOPIC = "mesh.rx.nak"
     DUPLICATE_TOPIC = "mesh.rx.duplicate"
     RECEIVE_TOPIC = "meshtastic.receive"
 
@@ -142,11 +145,11 @@ class VirtualNode:
     def start(self) -> None:
         if self.stream is not None:
             return
-        pub.subscribe(self._handle_raw_packet, "mesh.rx.packet")
+        pub.subscribe(self._handle_raw_packet, self.RAW_PACKET_TOPIC)
         pub.subscribe(self._handle_unique_packet, self.PACKET_TOPIC)
         pub.subscribe(self._handle_compat_response_packet, self.RECEIVE_TOPIC)
-        pub.subscribe(self._handle_compat_ack, "mesh.rx.ack")
-        pub.subscribe(self._handle_compat_nak, "mesh.rx.nak")
+        pub.subscribe(self._handle_compat_ack, self.ACK_TOPIC)
+        pub.subscribe(self._handle_compat_nak, self.NAK_TOPIC)
         self.stream = UDPPacketStream(
             self.config.udp.mcast_group,
             int(self.config.udp.mcast_port),
@@ -169,7 +172,7 @@ class VirtualNode:
             self.stream.stop()
             self.stream = None
         try:
-            pub.unsubscribe(self._handle_raw_packet, "mesh.rx.packet")
+            pub.unsubscribe(self._handle_raw_packet, self.RAW_PACKET_TOPIC)
         except KeyError:
             pass
         try:
@@ -178,8 +181,8 @@ class VirtualNode:
             pass
         for topic, listener in (
             (self.RECEIVE_TOPIC, self._handle_compat_response_packet),
-            ("mesh.rx.ack", self._handle_compat_ack),
-            ("mesh.rx.nak", self._handle_compat_nak),
+            (self.ACK_TOPIC, self._handle_compat_ack),
+            (self.NAK_TOPIC, self._handle_compat_nak),
         ):
             try:
                 pub.unsubscribe(listener, topic)

@@ -866,6 +866,44 @@ class PkiCryptoTest(unittest.TestCase):
             self.assertEqual(packet["decoded"]["text"], "hello")
             self.assertIs(packet["raw"], inbound)
 
+    def test_receive_callback_runs_once_when_duplicate_wire_copy_is_not_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _public_key, private_key = generate_keypair()
+            config_path = self._write_temp_config(root, b64_encode(private_key))
+            node = VirtualNode(config_path)
+
+            received: list[tuple[dict[str, object], object]] = []
+
+            def on_receive(packet, interface) -> None:
+                received.append((packet, interface))
+
+            node.receive(on_receive)
+            try:
+                inbound = mesh_pb2.MeshPacket()
+                inbound.id = 5152
+                setattr(inbound, "from", int("12345678", 16))
+                inbound.to = node.node_num
+                inbound.channel = 0
+                inbound.hop_limit = 3
+                inbound.hop_start = 3
+                inbound.decoded.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
+                inbound.decoded.payload = b"hello once"
+
+                node._handle_raw_packet(inbound)
+                node._handle_unique_packet(inbound)
+
+                duplicate = mesh_pb2.MeshPacket()
+                duplicate.CopyFrom(inbound)
+                node._handle_raw_packet(duplicate)
+            finally:
+                node.unreceive(on_receive)
+
+            self.assertEqual(len(received), 1)
+            packet, interface = received[0]
+            self.assertIs(interface, node)
+            self.assertEqual(packet["decoded"]["text"], "hello once")
+
     def test_sendText_compat_returns_meshpacket(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

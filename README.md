@@ -82,6 +82,10 @@ Supported `VirtualNode` calls:
 - MeshInterface-compatible sends: `sendText()`, `sendAlert()`, `sendData()`, `sendPosition()`
 - Packet helpers: `is_direct_message_for_me()`, `is_text_message()`, `get_text_message()`, `reply_to_packet()`
 
+`receive(callback)` is deduplicated. Repeated multicast copies stay on `mudp`'s wire-level
+topics, while `vnode` publishes `meshtastic.receive` from `mesh.rx.unique_packet` so
+application callbacks run once per logical packet.
+
 ## Examples
 
 Use these as small runnable references for common tasks:
@@ -93,7 +97,7 @@ Use these as small runnable references for common tasks:
 - `examples/serial_or_vnode.py`: try a serial Meshtastic node first, then fall back to `VirtualNode`
 - `examples/send_dm.py`: minimal one-shot direct-message sender
 - `examples/library_embed.py`: minimal application-style embedding example using `VirtualNode` directly
-- `examples/watch_reliability.py`: watcher for ACK, NAK, retry, and retransmit-failure events
+- `examples/watch_reliability.py`: watcher for unique ACK, NAK, retry, and retransmit-failure events
 
 ```bash
 .venv/bin/python examples/autoresponder.py

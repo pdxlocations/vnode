@@ -1,6 +1,6 @@
 [project]
 name = "vnode"
-version = "0.1.8"
+version = "0.1.9"
 description = "Virtual Meshtastic node using mudp transport and meshdb storage."
 authors = [
     {name = "Ben Lipsey",email = "ben@pdxlocations.com"}

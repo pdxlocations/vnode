@@ -367,8 +367,13 @@ class VirtualNode:
         if getattr(conn, "socket", None) is None:
             conn.setup_multicast(self.config.udp.mcast_group, int(self.config.udp.mcast_port))
 
-    def send_nodeinfo(self, destination: int = BROADCAST_NUM) -> int:
-        return self._send_nodeinfo(destination)
+    def send_nodeinfo(
+        self,
+        destination: int = BROADCAST_NUM,
+        *,
+        want_response: bool = False,
+    ) -> int:
+        return self._send_nodeinfo(destination, want_response=want_response)
 
     def _send_nodeinfo(
         self,
@@ -376,6 +381,7 @@ class VirtualNode:
         *,
         request_id: Optional[int] = None,
         want_ack: bool = False,
+        want_response: bool = False,
     ) -> int:
         user = mesh_pb2.User(
             id=self.config.node_id,
@@ -392,6 +398,7 @@ class VirtualNode:
         data.payload = user.SerializeToString()
         data.source = self.node_num
         data.dest = int(destination)
+        data.want_response = bool(want_response)
         if request_id is not None:
             data.request_id = int(request_id)
         packet_id = self._send_data(

@@ -32,7 +32,7 @@ matching Meshtastic 2.8 identity binding. It is a read-only property of
 `NodeConfig`, not a JSON setting. Existing `node_id` fields are removed on
 load while preserving the private key and configured names. Changing the
 private key changes the node ID and starts a new node database; the old database
-is preserved. With meshdb 0.2, each owner file uses channel-scoped tables for
+is preserved. With meshdb 0.3, each owner file uses channel-scoped tables for
 node records, broadcasts, positions, and telemetry, plus per-peer DM tables.
 Existing contact records are copied from the legacy owner node table on startup;
 old message and telemetry tables remain intact.

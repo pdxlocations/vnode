@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import base64
 import secrets
+import struct
+import zlib
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Optional, Tuple
+
+import xeddsa
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
@@ -37,10 +41,65 @@ def generate_keypair() -> Tuple[bytes, bytes]:
 
 
 def derive_public_key(private_key: bytes) -> bytes:
-    return X25519PrivateKey.from_private_bytes(private_key).public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
+    return (
+        X25519PrivateKey.from_private_bytes(private_key)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
     )
+
+
+def node_id_from_public_key(public_key: bytes) -> int:
+    """Meshtastic 2.8 identity binding (IEEE CRC-32 of the X25519 key)."""
+    if len(public_key) != 32:
+        raise ValueError("Public key must be 32 bytes")
+    return zlib.crc32(public_key) & 0xFFFFFFFF
+
+
+def signing_buffer(from_node: int, packet_id: int, to_node: int, data) -> bytes:
+    """Firmware v1 signing layout; relay-mutated fields are deliberately excluded."""
+    has_bitfield = data.HasField("bitfield")
+    flags = int(data.want_response) | (int(has_bitfield) << 1)
+    return struct.pack(
+        "<B8IB",
+        1,
+        from_node,
+        packet_id,
+        to_node,
+        int(data.portnum),
+        data.request_id,
+        data.reply_id,
+        data.emoji,
+        data.bitfield if has_bitfield else 0,
+        flags,
+    ) + bytes(data.payload)
+
+
+def sign_data(
+    private_key: bytes, from_node: int, packet_id: int, to_node: int, data
+) -> bytes:
+    """Sign with the existing X25519 scalar, normalizing the Edwards sign bit to zero."""
+    scalar = bytearray(private_key)
+    if len(scalar) != 32:
+        raise ValueError("Private key must be 32 bytes")
+    scalar[0] &= 248
+    scalar[31] = (scalar[31] & 127) | 64
+    normalized = xeddsa.priv_force_sign(bytes(scalar), False)
+    return xeddsa.ed25519_priv_sign(
+        normalized, signing_buffer(from_node, packet_id, to_node, data)
+    )
+
+
+def attach_signature(data, signature: bytes) -> None:
+    """Field 10 is preserved as an unknown field by pre-2.8 protobuf packages."""
+    if len(signature) != 64:
+        raise ValueError("XEdDSA signature must be 64 bytes")
+    if "xeddsa_signature" in data.DESCRIPTOR.fields_by_name:
+        data.xeddsa_signature = signature
+    else:
+        data.MergeFromString(b"\x52\x40" + signature)
 
 
 def build_nonce(packet_id: int, from_node: int, extra_nonce: int) -> bytes:
@@ -66,7 +125,11 @@ class PkiEnvelope:
     extra_nonce: int
 
     def pack(self) -> bytes:
-        return self.ciphertext + self.tag + self.extra_nonce.to_bytes(4, "little", signed=False)
+        return (
+            self.ciphertext
+            + self.tag
+            + self.extra_nonce.to_bytes(4, "little", signed=False)
+        )
 
 
 def encrypt_dm(
@@ -78,7 +141,9 @@ def encrypt_dm(
     plaintext: bytes,
     extra_nonce: Optional[int] = None,
 ) -> bytes:
-    nonce_value = secrets.randbits(32) if extra_nonce is None else int(extra_nonce) & 0xFFFFFFFF
+    nonce_value = (
+        secrets.randbits(32) if extra_nonce is None else int(extra_nonce) & 0xFFFFFFFF
+    )
     key = build_shared_key(sender_private_key, receiver_public_key)
     nonce = build_nonce(packet_id, from_node, nonce_value)
     encrypted = AESCCM(key, tag_length=8).encrypt(nonce, plaintext, None)

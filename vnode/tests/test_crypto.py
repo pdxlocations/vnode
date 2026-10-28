@@ -8,8 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "vnode"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
+sys.path.insert(0, str(SOURCE_ROOT))
 
 from meshtastic import BROADCAST_NUM
 from examples.autoresponder import DirectMessageAutoResponder
@@ -212,7 +211,7 @@ class PkiCryptoTest(unittest.TestCase):
             self.assertEqual(node.config.position.latitude, 45.523064)
             self.assertEqual(node.config.position.longitude, -122.676483)
             self.assertEqual(node.config.position.altitude, 27)
-            self.assertEqual(written["node_id"], node.config.node_id)
+            self.assertNotIn("node_id", written)
             self.assertEqual(written["long_name"], f"Meshtastic {expected_suffix}")
             self.assertEqual(written["short_name"], expected_suffix)
             self.assertTrue(written["security"]["private_key"])
@@ -343,7 +342,7 @@ class PkiCryptoTest(unittest.TestCase):
             with sqlite3.connect(Path(node.meshdb_path) / f"{node.node_num}.db") as con:
                 row = con.execute(
                     f'SELECT node_num, message_text, packet_id, to_node, channel, want_ack, pki_encrypted '
-                    f'FROM "{node.node_num}_{packet.channel}_messages" WHERE packet_id = ?',
+                    'FROM "channel_messages" WHERE packet_id = ?',
                     (packet_id,),
                 ).fetchone()
 
@@ -367,7 +366,7 @@ class PkiCryptoTest(unittest.TestCase):
             peer_public_key, _peer_private_key = generate_keypair()
             config_path = self._write_temp_config(root, b64_encode(private_key))
             node = VirtualNode(config_path)
-            NodeDB(node.node_num, node.meshdb_path).upsert(
+            NodeDB(node.node_num, node.meshdb_path, **node._db_scope).upsert(
                 node_num=int("12345678", 16),
                 public_key=b64_encode(peer_public_key),
             )
@@ -397,7 +396,7 @@ class PkiCryptoTest(unittest.TestCase):
             with sqlite3.connect(Path(node.meshdb_path) / f"{node.node_num}.db") as con:
                 row = con.execute(
                     f'SELECT node_num, message_text, packet_id, to_node, channel, want_ack, pki_encrypted '
-                    f'FROM "{node.node_num}_0_messages" WHERE packet_id = ?',
+                    'FROM "dm_305419896_messages" WHERE packet_id = ?',
                     (packet_id,),
                 ).fetchone()
 
@@ -1214,12 +1213,12 @@ class PkiCryptoTest(unittest.TestCase):
             stored = handle_packet(normalize_packet(packet, "udp"), node_database_number=owner, db_path=str(db_root))
             self.assertTrue(stored["message"])
 
-            with sqlite3.connect(db_root / f"{owner}.db") as con:
+            with sqlite3.connect(db_root / "channel_7.db") as con:
                 row = con.execute(
                     f'SELECT message_text, timestamp, to_node, packet_id, channel, rx_snr, rx_rssi, hop_limit, '
                     f'want_ack, priority, delayed, via_mqtt, hop_start, public_key, pki_encrypted, '
                     f'next_hop, relay_node, tx_after, transport_mechanism '
-                    f'FROM "{owner}_7_messages" WHERE node_num = ?',
+                    f'FROM "channel_messages" WHERE node_num = ?',
                     (str(int("12345678", 16)),),
                 ).fetchone()
 
@@ -1283,11 +1282,11 @@ class PkiCryptoTest(unittest.TestCase):
             stored = handle_packet(normalize_packet(packet, "udp"), node_database_number=owner, db_path=str(db_root))
             self.assertTrue(stored["position"])
 
-            with sqlite3.connect(db_root / f"{owner}.db") as con:
+            with sqlite3.connect(db_root / "channel_1.db") as con:
                 row = con.execute(
                     f'SELECT latitude_i, longitude_i, altitude, timestamp, packet_id, rx_snr, rx_rssi, '
                     f'priority, hop_start, next_hop, relay_node, tx_after, transport_mechanism '
-                    f'FROM "{owner}_location" WHERE node_num = ?',
+                    f'FROM "channel_location" WHERE node_num = ?',
                     (str(int("12345678", 16)),),
                 ).fetchone()
 
@@ -1354,12 +1353,12 @@ class PkiCryptoTest(unittest.TestCase):
             stored = handle_packet(packet, node_database_number=owner, db_path=str(db_root))
             self.assertTrue(stored["telemetry"])
 
-            with sqlite3.connect(db_root / f"{owner}.db") as con:
+            with sqlite3.connect(db_root / "channel_3.db") as con:
                 row = con.execute(
                     f'SELECT battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds, timestamp, '
                     f'packet_id, rx_snr, rx_rssi, want_ack, priority, delayed, via_mqtt, public_key, '
                     f'pki_encrypted, next_hop, relay_node, tx_after, transport_mechanism '
-                    f'FROM "{owner}_telemetry_device" WHERE node_num = ?',
+                    f'FROM "channel_telemetry_device" WHERE node_num = ?',
                     (str(int("12345678", 16)),),
                 ).fetchone()
 

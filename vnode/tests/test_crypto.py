@@ -69,7 +69,7 @@ class PkiCryptoTest(unittest.TestCase):
                         "psk": "AQ==",
                     },
                     "udp": {
-                        "mcast_group": "224.0.0.69",
+                        "mcast_group": "239.0.0.69",
                         "mcast_port": 4403,
                     },
                     "meshdb": {
@@ -184,7 +184,7 @@ class PkiCryptoTest(unittest.TestCase):
                             "psk": "AQ==",
                         },
                         "udp": {
-                            "mcast_group": "224.0.0.69",
+                            "mcast_group": "239.0.0.69",
                             "mcast_port": 4403,
                         },
                         "meshdb": {
@@ -239,7 +239,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_position()
@@ -293,7 +293,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_text("!12345678", "hello")
@@ -326,7 +326,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_text("!12345678", "store outbound")
@@ -378,7 +378,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_text("!12345678", "store outbound pki", pki_mode="on")
@@ -426,7 +426,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_host = conn.host
             original_port = conn.port
             try:
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -473,7 +473,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -527,7 +527,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -573,7 +573,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_host = conn.host
             original_port = conn.port
             try:
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -618,7 +618,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -658,7 +658,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_host = conn.host
             original_port = conn.port
             try:
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 node._last_nodeinfo_sent_monotonic = time.monotonic()
@@ -700,7 +700,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_host = conn.host
             original_port = conn.port
             try:
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 node._last_position_reply_monotonic = time.monotonic()
@@ -732,7 +732,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_host = conn.host
             original_port = conn.port
             try:
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 mudp_send_text_message(
@@ -765,7 +765,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_text("!12345678", "hello")
@@ -799,7 +799,7 @@ class PkiCryptoTest(unittest.TestCase):
             try:
                 pub.subscribe(on_max_retransmit, "mesh.tx.max_retransmit")
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
                 packet_id = node.send_text("!12345678", "retry me")
@@ -917,7 +917,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: sent.append(data)
 
@@ -957,7 +957,7 @@ class PkiCryptoTest(unittest.TestCase):
             original_port = conn.port
             try:
                 node.connect_send_socket = lambda: None
-                conn.host = "224.0.0.69"
+                conn.host = "239.0.0.69"
                 conn.port = 4403
                 conn.sendto = lambda data, addr: None
 
@@ -1078,7 +1078,7 @@ class PkiCryptoTest(unittest.TestCase):
             )
 
     def test_mudp_packet_stream_detects_duplicates(self) -> None:
-        stream = UDPPacketStream("224.0.0.69", 4403, key="AQ==", parse_payload=False)
+        stream = UDPPacketStream("239.0.0.69", 4403, key="AQ==", parse_payload=False)
 
         inbound = mesh_pb2.MeshPacket()
         inbound.id = 7001

@@ -30,7 +30,7 @@ class ChannelConfig:
 
 @dataclass
 class UdpConfig:
-    mcast_group: str = "224.0.0.69"
+    mcast_group: str = "239.0.0.69"
     mcast_port: int = 4403
 
 

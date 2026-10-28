@@ -12,7 +12,7 @@ import meshdb
 from google.protobuf.message import DecodeError
 from meshtastic import BROADCAST_ADDR, BROADCAST_NUM, LOCAL_ADDR, config_pb2, mesh_pb2, portnums_pb2, protocols
 from mudp import UDPPacketStream
-from mudp.encryption import encrypt_packet as mudp_encrypt_packet
+from mudp.encryption import encrypt_packet as mudp_encrypt_packet, generate_hash
 from mudp.reliability import is_ack, is_nak, publish_ack, register_pending_ack, send_ack
 from mudp.singleton import conn, node as mudp_node
 from pubsub import pub
@@ -90,6 +90,12 @@ class VirtualNode:
         self.node_num = parse_node_id(self.config.node_id)
         self.role_num = resolve_role(self.config.role)
         self.meshdb_path = str((self.base_dir / self.config.meshdb.path).resolve())
+        # Keep the owner database filename while using meshdb 0.2's channel tables.
+        self._db_scope = {
+            "channel": generate_hash(self.config.channel.name, self.config.channel.psk),
+            "channel_name": self.config.channel.name,
+            "storage_name": str(self.node_num),
+        }
         self.stream: Optional[UDPPacketStream] = None
         self._stop = threading.Event()
         self._broadcast_thread: Optional[threading.Thread] = None
@@ -114,7 +120,39 @@ class VirtualNode:
     def _seed_owner_record(self) -> None:
         Path(self.meshdb_path).mkdir(parents=True, exist_ok=True)
         meshdb.set_default_db_path(self.meshdb_path)
-        meshdb.NodeDB(self.node_num, self.meshdb_path).upsert(
+        node_db = meshdb.NodeDB(self.node_num, self.meshdb_path, **self._db_scope)
+        node_db.ensure_table()
+        # Import legacy contacts once; later deletions must not resurrect them.
+        with node_db.connect() as con:
+            legacy_table = f"{self.node_num}_nodedb"
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (legacy_table,),
+            ).fetchone()
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS vnode_migrations (name TEXT PRIMARY KEY)"
+            )
+            imported = con.execute(
+                "SELECT 1 FROM vnode_migrations WHERE name='channel_contacts'"
+            ).fetchone()
+            if exists and not imported:
+                old_columns = {
+                    row[1]
+                    for row in con.execute(f'PRAGMA table_info("{legacy_table}")')
+                }
+                columns = [
+                    row[1]
+                    for row in con.execute(f"PRAGMA table_info({node_db.table})")
+                    if row[1] in old_columns
+                ]
+                names = ", ".join(f'"{name}"' for name in columns)
+                con.execute(
+                    f'INSERT OR IGNORE INTO {node_db.table} ({names}) SELECT {names} FROM "{legacy_table}"'
+                )
+                con.execute(
+                    "INSERT INTO vnode_migrations (name) VALUES ('channel_contacts')"
+                )
+        node_db.upsert(
             node_num=self.node_num,
             long_name=self.config.long_name,
             short_name=self.config.short_name,
@@ -795,7 +833,7 @@ class VirtualNode:
 
     def _known_node_count(self) -> int:
         try:
-            node_db = meshdb.NodeDB(self.node_num, self.meshdb_path)
+            node_db = meshdb.NodeDB(self.node_num, self.meshdb_path, **self._db_scope)
             node_db.ensure_table()
             with node_db.connect() as con:
                 row = con.execute(f"SELECT COUNT(*) FROM {node_db.table}").fetchone()
@@ -824,6 +862,7 @@ class VirtualNode:
             normalized,
             node_database_number=self.node_num,
             db_path=self.meshdb_path,
+            **self._db_scope,
         )
 
     def _publish_receive(self, packet: mesh_pb2.MeshPacket) -> None:
@@ -958,7 +997,12 @@ class VirtualNode:
         text = str(destination).strip()
         if text.startswith("!"):
             return parse_node_id(text)
-        resolved = meshdb.get_node_num(text, owner_node_num=self.node_num, db_path=self.meshdb_path)
+        resolved = meshdb.get_node_num(
+            text,
+            owner_node_num=self.node_num,
+            db_path=self.meshdb_path,
+            **self._db_scope,
+        )
         if isinstance(resolved, list):
             raise ValueError(f"Destination '{destination}' is ambiguous: {resolved}")
         if resolved is None:
@@ -969,7 +1013,12 @@ class VirtualNode:
         if int(node_num) == self.node_num:
             key = self._public_key_b64
             return b64_decode(key) if key else None
-        row = meshdb.get_nodeinfo(int(node_num), owner_node_num=self.node_num, db_path=self.meshdb_path)
+        row = meshdb.get_nodeinfo(
+            int(node_num),
+            owner_node_num=self.node_num,
+            db_path=self.meshdb_path,
+            **self._db_scope,
+        )
         if not isinstance(row, dict):
             return None
         public_key = str(row.get("public_key", "")).strip()

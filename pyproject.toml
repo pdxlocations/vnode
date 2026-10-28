@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.9,<3.15"
 dependencies = [
   "cryptography>=43,<45",
-  "meshdb>=0.1.9",
+  "XEdDSA>=1.2,<2",
+  "meshdb>=0.1.9,<0.2",
   "meshtastic>=2.7,<3.0",
   "mudp>=1.1.5",
 ]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -47,7 +46,6 @@ class SecurityConfig:
 
 @dataclass
 class NodeConfig:
-    node_id: str = ""
     long_name: str = "Virtual Meshtastic Node"
     short_name: str = "VND"
     hw_model: Union[str, int] = "ANDROID_SIM"
@@ -60,6 +58,13 @@ class NodeConfig:
     udp: UdpConfig = field(default_factory=UdpConfig)
     meshdb: MeshDbConfig = field(default_factory=MeshDbConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+
+    @property
+    def node_id(self) -> str:
+        from .crypto import b64_decode, derive_public_key, node_id_from_public_key
+
+        public_key = derive_public_key(b64_decode(self.security.private_key))
+        return f"!{node_id_from_public_key(public_key):08x}"
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "NodeConfig":
@@ -75,7 +80,6 @@ class NodeConfig:
         security_payload = dict(payload.get("security", {}))
         security_payload.pop("enabled", None)
         return cls(
-            node_id=str(payload.get("node_id", cls.node_id)),
             long_name=str(payload.get("long_name", cls.long_name)),
             short_name=str(payload.get("short_name", cls.short_name)),
             hw_model=payload.get("hw_model", cls.hw_model),
@@ -107,7 +111,11 @@ class NodeConfig:
             return
 
         template_path = next(
-            (candidate for candidate in cls._example_config_candidates(config_path) if candidate.exists()),
+            (
+                candidate
+                for candidate in cls._example_config_candidates(config_path)
+                if candidate.exists()
+            ),
             None,
         )
         if template_path is None:
@@ -120,23 +128,11 @@ class NodeConfig:
         cls._populate_generated_defaults(payload)
         security = payload.setdefault("security", {})
         security.pop("public_key", None)
-        if not str(security.get("private_key", "")).strip():
-            from .crypto import b64_encode, generate_keypair
-
-            _public_key, private_key = generate_keypair()
-            security["private_key"] = b64_encode(private_key)
 
         config_path.write_text(
             json.dumps(payload, indent=2, sort_keys=False) + "\n",
             encoding="utf-8",
         )
-
-    @staticmethod
-    def _generate_node_id() -> str:
-        while True:
-            value = secrets.randbits(32)
-            if value not in (0, 0xFFFFFFFF):
-                return f"!{value:08x}"
 
     @staticmethod
     def _generated_names(node_id: str) -> Dict[str, str]:
@@ -148,11 +144,27 @@ class NodeConfig:
 
     @classmethod
     def _populate_generated_defaults(cls, payload: Dict[str, Any]) -> bool:
+        from .crypto import (
+            b64_decode,
+            b64_encode,
+            derive_public_key,
+            generate_keypair,
+            node_id_from_public_key,
+        )
+
         changed = False
-        if not str(payload.get("node_id", "")).strip():
-            payload["node_id"] = cls._generate_node_id()
+        security = payload.setdefault("security", {})
+        private_key = str(security.get("private_key", "")).strip()
+        if not private_key:
+            _, private_bytes = generate_keypair()
+            private_key = security["private_key"] = b64_encode(private_bytes)
             changed = True
-        generated_names = cls._generated_names(str(payload["node_id"]))
+        public_key = derive_public_key(b64_decode(private_key))
+        node_id = f"!{node_id_from_public_key(public_key):08x}"
+        if "node_id" in payload:
+            del payload["node_id"]
+            changed = True
+        generated_names = cls._generated_names(node_id)
         if not str(payload.get("long_name", "")).strip():
             payload["long_name"] = generated_names["long_name"]
             changed = True

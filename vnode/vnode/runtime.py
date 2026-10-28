@@ -18,7 +18,19 @@ from mudp.singleton import conn, node as mudp_node
 from pubsub import pub
 
 from .config import NodeConfig
-from .crypto import b64_decode, b64_encode, decrypt_dm, derive_public_key, encrypt_dm, generate_keypair
+from .crypto import (
+    attach_signature,
+    b64_decode,
+    b64_encode,
+    decrypt_dm,
+    derive_public_key,
+    encrypt_dm,
+    sign_data,
+)
+
+RADIO_HEADER_BYTES = 16
+MAX_RADIO_FRAME_BYTES = 255
+ENCODED_SIGNATURE_BYTES = 66
 
 PKI_DISALLOWED_PORTNUMS = {
     portnums_pb2.PortNum.TRACEROUTE_APP,
@@ -82,33 +94,17 @@ class VirtualNode:
         self._stop = threading.Event()
         self._broadcast_thread: Optional[threading.Thread] = None
         self._message_id = random.getrandbits(32)
-        self._public_key_b64 = ""
+        self._public_key_b64 = b64_encode(
+            derive_public_key(b64_decode(self.config.security.private_key))
+        )
         self._last_nodeinfo_sent_monotonic = 0.0
         self._last_position_reply_monotonic = 0.0
         self._last_nodeinfo_seen: Dict[int, int] = {}
         self._response_handlers: Dict[int, Dict[str, Any]] = {}
 
-        self._ensure_security_keys()
         self._write_public_key_file()
         self._seed_owner_record()
         self._configure_mudp_globals()
-
-    def _ensure_security_keys(self) -> None:
-        private_key = self.config.security.private_key.strip()
-        changed = False
-
-        if private_key:
-            self._public_key_b64 = b64_encode(derive_public_key(b64_decode(private_key)))
-        else:
-            public_bytes, private_bytes = generate_keypair()
-            self._public_key_b64 = b64_encode(public_bytes)
-            private_key = b64_encode(private_bytes)
-            changed = True
-
-        if changed:
-            self.config.security.private_key = private_key
-            self.config.security.public_key = ""
-            self.config.save(self.config_path)
 
     def _write_public_key_file(self) -> None:
         if not self._public_key_b64:
@@ -220,16 +216,23 @@ class VirtualNode:
     def getPublicKey(self):
         return b64_decode(self._public_key_b64) if self._public_key_b64 else None
 
-    def getMyUser(self):
+    def _build_user(self) -> mesh_pb2.User:
         user = mesh_pb2.User(
             id=self.config.node_id,
             long_name=self.config.long_name,
             short_name=self.config.short_name,
+            # Nanopb always emits this fixed-length field, even when all zero.
+            # Include it before signing so gateway re-encoding preserves payload bytes.
+            macaddr=bytes(6),
             hw_model=resolve_hw_model(self.config.hw_model),
         )
         user.role = resolve_role(self.config.role)
         if self._public_key_b64:
             user.public_key = b64_decode(self._public_key_b64)
+        return user
+
+    def getMyUser(self):
+        user = self._build_user()
         return MessageToDict(user, preserving_proto_field_name=False, use_integers_for_enums=False)
 
     def getMyNodeInfo(self):
@@ -383,15 +386,7 @@ class VirtualNode:
         want_ack: bool = False,
         want_response: bool = False,
     ) -> int:
-        user = mesh_pb2.User(
-            id=self.config.node_id,
-            long_name=self.config.long_name,
-            short_name=self.config.short_name,
-            hw_model=resolve_hw_model(self.config.hw_model),
-        )
-        user.role = resolve_role(self.config.role)
-        if self._public_key_b64:
-            user.public_key = b64_decode(self._public_key_b64)
+        user = self._build_user()
 
         data = mesh_pb2.Data()
         data.portnum = portnums_pb2.PortNum.NODEINFO_APP
@@ -622,12 +617,45 @@ class VirtualNode:
                 plaintext=data.SerializeToString(),
             )
         else:
+            signable = (
+                destination == BROADCAST_NUM
+                or data.portnum
+                in (
+                    portnums_pb2.PortNum.NODEINFO_APP,
+                    portnums_pb2.PortNum.POSITION_APP,
+                )
+                or (
+                    self.config.is_licensed
+                    and data.portnum != portnums_pb2.PortNum.ROUTING_APP
+                )
+            ) and data.portnum != portnums_pb2.PortNum.TRACEROUTE_APP
+            # Sign a copy so a caller can safely reuse its Data object. Field 10 costs
+            # 66 bytes; the radio frame permits 255 bytes including its 16-byte header.
+            data_copy = mesh_pb2.Data()
+            data_copy.CopyFrom(data)
+            if "xeddsa_signature" in data_copy.DESCRIPTOR.fields_by_name:
+                data_copy.ClearField("xeddsa_signature")
+            if signable and (
+                data_copy.ByteSize() + ENCODED_SIGNATURE_BYTES + RADIO_HEADER_BYTES
+                <= MAX_RADIO_FRAME_BYTES
+            ):
+                attach_signature(
+                    data_copy,
+                    sign_data(
+                        b64_decode(self.config.security.private_key),
+                        self.node_num,
+                        packet.id,
+                        int(destination),
+                        data_copy,
+                    ),
+                )
             packet.encrypted = mudp_encrypt_packet(
                 self.config.channel.name,
                 self.config.channel.psk,
                 packet,
-                data,
+                data_copy,
             )
+            data = data_copy
 
         raw_packet = packet.SerializeToString()
         register_pending_ack(packet, raw_packet)
@@ -785,7 +813,8 @@ class VirtualNode:
         stored_packet = mesh_pb2.MeshPacket()
         stored_packet.CopyFrom(packet)
         stored_packet.rx_time = int(time.time())
-        stored_packet.transport_mechanism = mesh_pb2.MeshPacket.TransportMechanism.TRANSPORT_MULTICAST_UDP
+        if "transport_mechanism" in stored_packet.DESCRIPTOR.fields_by_name:
+            stored_packet.transport_mechanism = mesh_pb2.MeshPacket.TransportMechanism.TRANSPORT_MULTICAST_UDP
         stored_packet.decoded.CopyFrom(data)
         self._persist_packet(stored_packet)
 

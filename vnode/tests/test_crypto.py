@@ -8,8 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "vnode"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
+sys.path.insert(0, str(SOURCE_ROOT))
 
 from meshtastic import BROADCAST_NUM
 from examples.autoresponder import DirectMessageAutoResponder
@@ -212,7 +211,7 @@ class PkiCryptoTest(unittest.TestCase):
             self.assertEqual(node.config.position.latitude, 45.523064)
             self.assertEqual(node.config.position.longitude, -122.676483)
             self.assertEqual(node.config.position.altitude, 27)
-            self.assertEqual(written["node_id"], node.config.node_id)
+            self.assertNotIn("node_id", written)
             self.assertEqual(written["long_name"], f"Meshtastic {expected_suffix}")
             self.assertEqual(written["short_name"], expected_suffix)
             self.assertTrue(written["security"]["private_key"])

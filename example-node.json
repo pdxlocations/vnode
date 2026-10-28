@@ -22,7 +22,7 @@
     "psk": "AQ=="
   },
   "udp": {
-    "mcast_group": "224.0.0.69",
+    "mcast_group": "239.0.0.69",
     "mcast_port": 4403
   },
   "meshdb": {
